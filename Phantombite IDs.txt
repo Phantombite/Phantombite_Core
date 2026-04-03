@@ -1,0 +1,9 @@
+Phantombite=Artefact=3689668016
+Phantombite_CableWinch=3689668160
+Phantombite_Core=3689625814
+Phantombite_Creatures=3691346493
+Phantombite_Economy=3689686739
+Phantombite_Encounter=3689684015
+Phantombite_Server_Addon=3689667750
+Phantombite_Sulvax=3691347867
+Phantombite_Sulvax_RespawnRover=3692354958
