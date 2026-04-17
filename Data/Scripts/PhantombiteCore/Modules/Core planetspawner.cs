@@ -22,7 +22,7 @@ namespace PhantombiteCore.Modules
         private const string SUBTYPE_ID   = "Sulvax";
         private const int    SEED         = 12345;
         private const float  DIAMETER     = 120000f;
-        private static readonly Vector3D POSITION_CENTER = new Vector3D(29549812.44, 232943.94, 40360745.90);
+        private static readonly Vector3D POSITION_CENTER = new Vector3D(578292.44, 87234.60, 3629005.91); 
 
         public void Init()    { }
         public void Update()  { }

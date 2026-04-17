@@ -30,6 +30,10 @@ namespace PhantombiteCore.Modules
         private const string MODULE    = "Core_Command";
         private const int    PAGE_SIZE = 7;
 
+        // Multiplayer Netzwerkpakete (ushort — überquert Client ↔ Server)
+        private const ushort CMD_TO_SERVER_PACKET      = 5997; // Client → Server: CMD weiterleiten
+        private const ushort CMDRESULT_TO_CLIENT_PACKET = 5998; // Server → Client: CMDRESULT zurück
+
         private ModDetector       _modDetector;
         private FileManagerModule _fileManager;
         private bool _initialized = false;
@@ -50,7 +54,7 @@ namespace PhantombiteCore.Modules
             public DateTime SentAt;
         }
         private readonly Dictionary<string, PendingCommand> _pendingCommands = new Dictionary<string, PendingCommand>();
-        private const double COMMAND_TIMEOUT_SEC = 2.0;
+        private const double COMMAND_TIMEOUT_SEC = 10.0;
         private int _timeoutCheckTick = 0;
 
         private class CommandInfo
@@ -79,6 +83,9 @@ namespace PhantombiteCore.Modules
             MyAPIGateway.Utilities.MessageEntered += OnMessageEntered;
             MyAPIGateway.Utilities.RegisterMessageHandler(1995000L, OnModRegistration);
             MyAPIGateway.Utilities.RegisterMessageHandler(1995999L, OnLogReceived);
+            // Netzwerkpakete für Client ↔ Server Command-Routing
+            MyAPIGateway.Multiplayer.RegisterMessageHandler(CMD_TO_SERVER_PACKET,      OnClientCmdReceived);
+            MyAPIGateway.Multiplayer.RegisterMessageHandler(CMDRESULT_TO_CLIENT_PACKET, OnServerCmdResultReceived);
             _initialized = true;
             LoggerModule.Info(MOD, MODULE, "Initialized — Prefix: " + PREFIX);
         }
@@ -114,6 +121,8 @@ namespace PhantombiteCore.Modules
                 MyAPIGateway.Utilities.MessageEntered -= OnMessageEntered;
                 MyAPIGateway.Utilities.UnregisterMessageHandler(1995000L, OnModRegistration);
                 MyAPIGateway.Utilities.UnregisterMessageHandler(1995999L, OnLogReceived);
+                MyAPIGateway.Multiplayer.UnregisterMessageHandler(CMD_TO_SERVER_PACKET,      OnClientCmdReceived);
+                MyAPIGateway.Multiplayer.UnregisterMessageHandler(CMDRESULT_TO_CLIENT_PACKET, OnServerCmdResultReceived);
             }
             _initialized = false;
         }
@@ -194,7 +203,10 @@ namespace PhantombiteCore.Modules
                         (player, args) => SendCommandToMod(player, ch, cmdName, args));
                 }
 
-                LoggerModule.Info(MOD, MODULE, "Mod registriert via Messaging: " + modName + " (Kanal: " + channel + ")");
+                var cmdNames = new System.Text.StringBuilder();
+                foreach (var cmd in _modCommands[modName])
+                    cmdNames.Append(cmd.Name + (cmd.AdminOnly ? "[A]" : "") + " ");
+                LoggerModule.Info(MOD, MODULE, "Mod registriert: " + modName + " (Kanal: " + channel + ") — Commands: " + cmdNames.ToString().Trim());
 
                 // Dem Mod sofort seinen Debug-Level mitteilen
                 SendLogLevel(channel, modName);
@@ -288,16 +300,83 @@ namespace PhantombiteCore.Modules
                 }
 
                 double durationMs = (DateTime.UtcNow - pending.SentAt).TotalMilliseconds;
+                ulong targetSteamId = pending.SteamId;
                 _pendingCommands.Remove(key);
 
                 bool ok = status == "ok";
                 LoggerModule.Debug(MOD, MODULE, $"CMDRESULT: '{key}' — {status} — '{message}' ({durationMs:F0}ms)");
                 LoggerModule.Trace(MOD, MODULE, $"Pending-Eintrag entfernt: Key='{key}', Dauer={durationMs:F0}ms, Pending verbleibend: {_pendingCommands.Count}");
-                ShowHud(message, ok);
+
+                if (_modDetector != null && !_modDetector.IsSingleplayer && MyAPIGateway.Multiplayer.IsServer)
+                {
+                    // Dedicated Server: CMDRESULT per Netzwerkpaket an den Client zurückschicken
+                    byte[] resultData = Encoding.UTF8.GetBytes(msg);
+                    MyAPIGateway.Multiplayer.SendMessageTo(CMDRESULT_TO_CLIENT_PACKET, resultData, targetSteamId);
+                    LoggerModule.Debug(MOD, MODULE, $"CMDRESULT via Netzwerk an Client {targetSteamId} gesendet.");
+                }
+                else
+                {
+                    ShowHud(message, ok);
+                }
             }
             catch (Exception ex)
             {
                 LoggerModule.Error(MOD, MODULE, "Fehler in OnCmdResult", ex);
+            }
+        }
+
+        /// <summary>
+        /// Empfängt CMD-Paket vom Client auf dem Server.
+        /// Extrahiert Kanal + CMD-Nachricht und leitet sie lokal an den Mod weiter.
+        /// </summary>
+        private void OnClientCmdReceived(byte[] data)
+        {
+            try
+            {
+                if (!MyAPIGateway.Multiplayer.IsServer) return;
+
+                string packet = Encoding.UTF8.GetString(data);
+                int sep = packet.IndexOf('|');
+                if (sep <= 0) return;
+
+                long channel;
+                if (!long.TryParse(packet.Substring(0, sep), out channel)) return;
+
+                string msg = packet.Substring(sep + 1);
+                LoggerModule.Debug(MOD, MODULE, $"CMD-Paket vom Client empfangen — Kanal: {channel}, Nachricht: '{msg}'");
+                MyAPIGateway.Utilities.SendModMessage(channel, msg);
+            }
+            catch (Exception ex)
+            {
+                LoggerModule.Error(MOD, MODULE, "Fehler in OnClientCmdReceived", ex);
+            }
+        }
+
+        /// <summary>
+        /// Empfängt CMDRESULT-Paket vom Server auf dem Client.
+        /// Parst das Ergebnis und zeigt es dem Spieler an.
+        /// </summary>
+        private void OnServerCmdResultReceived(byte[] data)
+        {
+            try
+            {
+                if (MyAPIGateway.Multiplayer.IsServer) return;
+
+                string msg = Encoding.UTF8.GetString(data);
+                LoggerModule.Debug(MOD, MODULE, $"CMDRESULT-Paket vom Server empfangen: '{msg}'");
+
+                // Format: CMDRESULT|modName|cmdName|args|steamId|status|message
+                string[] parts = msg.Split(new[] { '|' }, 7);
+                if (parts.Length < 7) return;
+
+                string status  = parts[5];
+                string message = parts[6];
+                bool ok = status == "ok";
+                ShowHud(message, ok);
+            }
+            catch (Exception ex)
+            {
+                LoggerModule.Error(MOD, MODULE, "Fehler in OnServerCmdResultReceived", ex);
             }
         }
 
@@ -339,8 +418,21 @@ namespace PhantombiteCore.Modules
 
                 _pendingCommands[key] = new PendingCommand { SteamId = player.SteamUserId, SentAt = DateTime.UtcNow };
 
-                MyAPIGateway.Utilities.SendModMessage(channel, msg);
-                LoggerModule.Debug(MOD, MODULE, $"Command weitergeleitet — Mod: '{modName}', Kanal: {channel}, Nachricht: '{msg}'");
+                if (_modDetector != null && !_modDetector.IsSingleplayer)
+                {
+                    // Dedicated Server: CMD per Netzwerkpaket an Server-Core weiterleiten
+                    // Server-Core empfängt, leitet lokal an den Mod weiter via SendModMessage
+                    string packet = channel + "|" + msg;
+                    byte[] packetData = Encoding.UTF8.GetBytes(packet);
+                    MyAPIGateway.Multiplayer.SendMessageToServer(CMD_TO_SERVER_PACKET, packetData);
+                    LoggerModule.Debug(MOD, MODULE, $"Command via Netzwerk an Server — Mod: '{modName}', Kanal: {channel}, Nachricht: '{msg}'");
+                }
+                else
+                {
+                    // Singleplayer: lokal via SendModMessage
+                    MyAPIGateway.Utilities.SendModMessage(channel, msg);
+                    LoggerModule.Debug(MOD, MODULE, $"Command lokal weitergeleitet — Mod: '{modName}', Kanal: {channel}, Nachricht: '{msg}'");
+                }
                 LoggerModule.Trace(MOD, MODULE, $"Pending-Eintrag erstellt: Key='{key}', SentAt={DateTime.UtcNow:HH:mm:ss.fff}, Pending gesamt: {_pendingCommands.Count}");
             }
             catch (Exception ex)
@@ -368,19 +460,27 @@ namespace PhantombiteCore.Modules
                 { ModRegistry.AutoTransfer,       1995009L }
             };
 
+            int sent = 0;
             foreach (var kvp in modChannels)
             {
-                if (!modDetector.IsActive(kvp.Key)) continue;
+                string source = modDetector.GetLoadSource(kvp.Key);
+                if (source == null)
+                {
+                    LoggerModule.Debug(MOD, MODULE, "READY uebersprungen — nicht aktiv: " + ModRegistry.GetName(kvp.Key));
+                    continue;
+                }
                 try
                 {
                     MyAPIGateway.Utilities.SendModMessage(kvp.Value, "READY");
-                    LoggerModule.Info(MOD, MODULE, "READY gesendet an Kanal: " + kvp.Value);
+                    LoggerModule.Info(MOD, MODULE, "READY gesendet an " + ModRegistry.GetName(kvp.Key) + " [" + source + "] (Kanal: " + kvp.Value + ")");
+                    sent++;
                 }
                 catch (Exception ex)
                 {
-                    LoggerModule.Error(MOD, MODULE, "Fehler beim Senden von READY an " + kvp.Value, ex);
+                    LoggerModule.Error(MOD, MODULE, "Fehler beim Senden von READY an " + ModRegistry.GetName(kvp.Key), ex);
                 }
             }
+            LoggerModule.Info(MOD, MODULE, "READY gesendet an " + sent + "/" + modChannels.Count + " Mods");
         }
 
         // ── Message Handler ───────────────────────────────────────────────────
