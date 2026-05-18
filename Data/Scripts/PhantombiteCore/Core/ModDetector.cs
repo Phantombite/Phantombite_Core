@@ -1,49 +1,37 @@
 using System.Collections.Generic;
 using Sandbox.ModAPI;
 using VRage.Game;
-using VRage.Utils;
+using PhantombiteCore.Modules;
 
 namespace PhantombiteCore.Core
 {
     /// <summary>
-    /// Detects which mods are active and logs them in 3 sections.
+    /// ModDetector — Erkennt welche Mods aktiv sind und loggt sie beim Start.
     ///
     /// Drei Modi:
     ///   Workshop — alle PB Mods per Workshop-ID geladen
     ///   Local    — alle PB Mods lokal geladen (ID=0 oder Name-Match)
     ///   Hybrid   — Mix aus Workshop und Local
     ///
-    /// IsActive prueft IMMER beide: Workshop-ID UND lokalen Namen.
+    /// IsActive prüft IMMER beide: Workshop-ID UND lokalen Namen.
     /// </summary>
     public class ModDetector
     {
         public enum LoadMode { Workshop, Local, Hybrid }
+
+        private const string MOD = "Phantombite_Core";
+        private const string MDL = "ModDetector";
 
         private readonly HashSet<ulong>  _activeIds   = new HashSet<ulong>();
         private readonly HashSet<string> _activeNames = new HashSet<string>();
         private readonly List<MyObjectBuilder_Checkpoint.ModItem> _otherMods
             = new List<MyObjectBuilder_Checkpoint.ModItem>();
 
-        // ── Session Typ ──────────────────────────────────────────────────────
-
-        public bool     IsServer      { get; private set; }
+        public bool     IsServer       { get; private set; }
         public bool     IsSingleplayer { get; private set; }
-        public LoadMode Mode          { get; private set; }
+        public LoadMode Mode           { get; private set; }
 
-        /// <summary>True wenn Core lokal läuft (kein Workshop).</summary>
         public bool IsDevMode => Mode != LoadMode.Workshop;
-
-        private static readonly ulong[] ALL_PB_IDS = {
-            ModRegistry.Artefact,
-            ModRegistry.AutoTransfer,
-            ModRegistry.CableWinch,
-            ModRegistry.Creatures,
-            ModRegistry.Economy,
-            ModRegistry.Encounter,
-            ModRegistry.ServerAddon,
-            ModRegistry.Sulvax,
-            ModRegistry.SulvaxRespawnRover
-        };
 
         public void Scan()
         {
@@ -54,10 +42,10 @@ namespace PhantombiteCore.Core
             IsServer       = MyAPIGateway.Multiplayer.IsServer;
             IsSingleplayer = MyAPIGateway.Session.OnlineMode == MyOnlineModeEnum.OFFLINE;
 
-            var mods = MyAPIGateway.Session != null ? MyAPIGateway.Session.Mods : null;
+            var mods = MyAPIGateway.Session?.Mods;
             if (mods == null)
             {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModDetector: Session.Mods not available!");
+                PBLog.Warn(MOD, MDL, "Session.Mods nicht verfügbar!");
                 return;
             }
 
@@ -69,33 +57,24 @@ namespace PhantombiteCore.Core
             }
 
             // ── Mode bestimmen ───────────────────────────────────────────────
-            // Prüfe wie viele PB Mods per ID vs per Name geladen sind
-            int byId   = 0;
-            int byName = 0;
-
-            foreach (var id in ALL_PB_IDS)
+            int byId = 0, byName = 0;
+            foreach (var id in ModRegistry.AllPbIds)
             {
                 bool hasId   = _activeIds.Contains(id);
                 var  local   = ModRegistry.GetLocalName(id);
                 bool hasName = local != null && _activeNames.Contains(local);
-
-                if (hasId)   byId++;
+                if (hasId)             byId++;
                 if (hasName && !hasId) byName++;
             }
 
-            // Core selbst zählt auch
             bool coreById   = _activeIds.Contains(ModRegistry.Core);
             bool coreByName = _activeNames.Contains(ModRegistry.LocalCore);
-
-            if (coreById)   byId++;
+            if (coreById)               byId++;
             if (coreByName && !coreById) byName++;
 
-            if (byId > 0 && byName == 0)
-                Mode = LoadMode.Workshop;
-            else if (byName > 0 && byId == 0)
-                Mode = LoadMode.Local;
-            else
-                Mode = LoadMode.Hybrid;
+            if      (byId > 0 && byName == 0) Mode = LoadMode.Workshop;
+            else if (byName > 0 && byId == 0) Mode = LoadMode.Local;
+            else                              Mode = LoadMode.Hybrid;
 
             // ── Andere Mods sammeln ──────────────────────────────────────────
             foreach (var mod in mods)
@@ -104,24 +83,21 @@ namespace PhantombiteCore.Core
                 _otherMods.Add(mod);
             }
 
-            // ── Log ──────────────────────────────────────────────────────────
-            Log("── Scan ─────────────────────────────────────────");
-            Log("Mode    : " + Mode.ToString().ToUpper());
-            Log("Session : " + (IsSingleplayer ? "Singleplayer" : (IsServer ? "Dedicated Server" : "Client")));
-            Log("Mods    : " + mods.Count + " aktiv");
-            Log("─────────────────────────────────────────────────");
-
-            LogPhantomBiteMods();
+            // ── Log ausgeben ─────────────────────────────────────────────────
+            PBLog.Log(MOD, MDL, "==========================================");
+            PBLog.Log(MOD, MDL, "Mode    : " + Mode.ToString().ToUpper());
+            PBLog.Log(MOD, MDL, "Session : " + (IsSingleplayer ? "Singleplayer" : (IsServer ? "Dedicated Server" : "Client")));
+            PBLog.Log(MOD, MDL, "==========================================");
+            LogActivePbMods();
             LogExternalDeps();
             LogOtherMods();
             LogWarnings();
-
-            Log("─────────────────────────────────────────────────");
+            PBLog.Log(MOD, MDL, "==========================================");
         }
 
-        /// <summary>
-        /// Prueft ob ein Mod aktiv ist — immer per ID UND per Name.
-        /// </summary>
+        // ── Public API ───────────────────────────────────────────────────────
+
+        /// <summary>Prüft ob ein Mod aktiv ist — per ID UND per lokalem Namen.</summary>
         public bool IsActive(ulong modId)
         {
             if (_activeIds.Contains(modId)) return true;
@@ -129,9 +105,6 @@ namespace PhantombiteCore.Core
             return localName != null && _activeNames.Contains(localName);
         }
 
-        /// <summary>
-        /// Gibt an wie ein Mod geladen wurde (Workshop / Local / nicht geladen).
-        /// </summary>
         public string GetLoadSource(ulong modId)
         {
             if (_activeIds.Contains(modId)) return "Workshop";
@@ -154,72 +127,69 @@ namespace PhantombiteCore.Core
             if (!string.IsNullOrEmpty(name))
             {
                 if (name == ModRegistry.LocalCore) return true;
-                foreach (var pbId in ALL_PB_IDS)
+                foreach (var pbId in ModRegistry.AllPbIds)
                     if (ModRegistry.GetLocalName(pbId) == name) return true;
             }
             return false;
         }
 
-        private void LogPhantomBiteMods()
+        private void LogActivePbMods()
         {
-            Log("── PhantomBite Mods ──────────────────────────────");
+            var activeList = new List<string>();
 
-            string coreSource = GetLoadSource(ModRegistry.Core) ?? "not loaded";
-            Log("  " + PadRight("Core", 20) + "(" + ModRegistry.Core + ") : SELF [" + coreSource + "]");
+            // Core selbst
+            string coreSource = GetLoadSource(ModRegistry.Core);
+            if (coreSource != null)
+                activeList.Add(PadRight("Core", 20) + "[" + coreSource + "]");
 
-            int active = 0;
-            foreach (var id in ALL_PB_IDS)
+            // Alle anderen PB Mods — nur aktive
+            foreach (var id in ModRegistry.AllPbIds)
             {
                 string source = GetLoadSource(id);
-                string state  = source != null ? "ACTIVE [" + source + "]" : "not loaded";
-                Log("  " + PadRight(ModRegistry.GetName(id), 20) + "(" + id + ") : " + state);
-                if (source != null) active++;
+                if (source == null) continue;
+                activeList.Add(PadRight(ModRegistry.GetName(id), 20) + "[" + source + "]");
             }
-            Log("  Aktiv: " + active + "/" + ALL_PB_IDS.Length);
+
+            PBLog.Log(MOD, MDL, "Aktive PB Mods (" + activeList.Count + "):");
+            foreach (var entry in activeList)
+                PBLog.Log(MOD, MDL, "  " + entry);
         }
 
         private void LogExternalDeps()
         {
+            // MES nur anzeigen wenn ein Mod es braucht ODER es aktiv ist
             bool mesNeeded = false;
             foreach (var id in ModRegistry.RequiresMES)
                 if (IsActive(id)) { mesNeeded = true; break; }
 
-            if (!mesNeeded && !IsExternalActive(ModRegistry.MES)) return;
+            bool mesActive = IsExternalActive(ModRegistry.MES);
+            if (!mesNeeded && !mesActive) return;
 
-            Log("── Externe Abhängigkeiten ────────────────────────");
-            var mesState = IsExternalActive(ModRegistry.MES) ? "ACTIVE" : "FEHLT";
-            Log("  " + PadRight("MES", 20) + "(" + ModRegistry.MES + ") : " + mesState);
+            PBLog.Log(MOD, MDL, "Externe Abhängigkeiten:");
+            string mesState = mesActive ? "AKTIV" : "FEHLT";
+            PBLog.Log(MOD, MDL, "  MES [" + ModRegistry.MES + "] " + mesState);
         }
 
         private void LogOtherMods()
         {
-            Log("── Andere Mods ───────────────────────────────────");
-            if (_otherMods.Count == 0) { Log("  (keine)"); return; }
+            if (_otherMods.Count == 0) return;
+
+            PBLog.Log(MOD, MDL, "Andere Mods (" + _otherMods.Count + "):");
             foreach (var mod in _otherMods)
             {
                 if (mod.PublishedFileId == ModRegistry.MES) continue;
                 string name = !string.IsNullOrEmpty(mod.Name) ? mod.Name : "(kein Name)";
-                string src  = mod.PublishedFileId == 0 ? "Local" : "Workshop";
-                Log("  " + PadRight(name, 30) + "(" + mod.PublishedFileId + ") [" + src + "]");
+                PBLog.Log(MOD, MDL, "  " + name + " [" + mod.PublishedFileId + "]");
             }
         }
 
         private void LogWarnings()
         {
-            bool anyWarning = false;
             foreach (var id in ModRegistry.RequiresMES)
             {
                 if (IsActive(id) && !IsExternalActive(ModRegistry.MES))
-                {
-                    if (!anyWarning) { Log("── WARNUNGEN ─────────────────────────────────────"); anyWarning = true; }
-                    Log("  WARNUNG: " + ModRegistry.GetName(id) + " ist aktiv aber MES fehlt! (ID: " + ModRegistry.MES + ")");
-                }
+                    PBLog.Warn(MOD, MDL, ModRegistry.GetName(id) + " ist aktiv aber MES fehlt! [" + ModRegistry.MES + "]");
             }
-        }
-
-        private void Log(string message)
-        {
-            MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModDetector: " + message);
         }
 
         private static string PadRight(string s, int width)

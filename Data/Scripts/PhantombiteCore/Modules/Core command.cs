@@ -4,21 +4,23 @@ using System.Text;
 using Sandbox.ModAPI;
 using VRage.Game;
 using VRage.Game.ModAPI;
-using VRage.Utils;
 using PhantombiteCore.Core;
 
 namespace PhantombiteCore.Modules
 {
     /// <summary>
-    /// Core_Command - Command System
+    /// Core_Command — Command System
     ///
     /// Prefix: !pbc
+    ///
+    /// REGISTER-Paket Format (Mods → Core):
+    ///   REGISTER|modName|modDesc|version|channel|cmd1:adminOnly:desc|...
+    ///   Backward-Compat: Fehlt version (parts[3] ist eine Zahl) → version = "?.?.?"
     ///
     /// Admin-only Mod Logik (automatisch):
     ///   - Hat ein Mod ausschliesslich adminOnly=true Commands gilt er als Admin-only
     ///   - Normale Spieler sehen ihn nicht in !pbc help
-    ///   - !pbc artefact help und !pbc artefact command → "Blockiert: Admin-Rechte erforderlich"
-    ///   - Sobald ein adminOnly=false Command registriert wird ist der Mod automatisch öffentlich
+    ///   - Sobald ein adminOnly=false Command registriert wird ist der Mod öffentlich
     ///   - Admins sehen immer alles
     /// </summary>
     public class CommandModule : IModule
@@ -30,24 +32,21 @@ namespace PhantombiteCore.Modules
         private const string MODULE    = "Core_Command";
         private const int    PAGE_SIZE = 7;
 
-        // Multiplayer Netzwerkpakete (ushort — überquert Client ↔ Server)
-        private const ushort CMD_TO_SERVER_PACKET      = 5997; // Client → Server: CMD weiterleiten
-        private const ushort CMDRESULT_TO_CLIENT_PACKET = 5998; // Server → Client: CMDRESULT zurück
+        private const ushort CMD_TO_SERVER_PACKET       = 5997;
+        private const ushort CMDRESULT_TO_CLIENT_PACKET = 5998;
 
         private ModDetector       _modDetector;
         private FileManagerModule _fileManager;
         private bool _initialized = false;
 
-        // ── Mod-zu-Mod Messaging ──────────────────────────────────────────────
-        // Kanal-ID → Mod-Name (für Command-Weiterleitung)
-        private readonly Dictionary<long, string> _modChannels = new Dictionary<long, string>();
+        private readonly Dictionary<long, string>             _modChannels     = new Dictionary<long, string>();
+        private readonly Dictionary<string, string>           _modDescriptions = new Dictionary<string, string>();
+        private readonly Dictionary<string, string>           _modVersions     = new Dictionary<string, string>();
+        private readonly Dictionary<string, List<CommandInfo>> _modCommands    = new Dictionary<string, List<CommandInfo>>();
+        private readonly Dictionary<string, int>              _tempLevels      = new Dictionary<string, int>();
+        private PerformanceModule _performanceModule;
+        private PlayerTrackerModule _playerTracker;
 
-        private readonly Dictionary<string, string>            _modDescriptions = new Dictionary<string, string>();
-        private readonly Dictionary<string, List<CommandInfo>> _modCommands     = new Dictionary<string, List<CommandInfo>>();
-        private readonly Dictionary<string, LoggerModule.LogLevel> _tempLevels  = new Dictionary<string, LoggerModule.LogLevel>();
-
-        // ── Pending Commands (Deduplizierung + Result-Tracking) ───────────────
-        // Key = "modName|cmdName|argsJoined|steamId"
         private class PendingCommand
         {
             public ulong    SteamId;
@@ -70,12 +69,12 @@ namespace PhantombiteCore.Modules
             }
         }
 
-        // ── Setup ─────────────────────────────────────────────────────────────
+        public void SetModDetector(ModDetector modDetector)         { _modDetector = modDetector; }
+        public void SetFileManager(FileManagerModule fileManager)   { _fileManager = fileManager; }
+        public void SetPerformanceModule(PerformanceModule perf)    { _performanceModule = perf; }
+        public void SetPlayerTracker(PlayerTrackerModule tracker)    { _playerTracker = tracker; }
 
-        public void SetModDetector(ModDetector modDetector) { _modDetector = modDetector; }
-        public void SetFileManager(FileManagerModule fileManager) { _fileManager = fileManager; }
-
-        // ── IModule ───────────────────────────────────────────────────────────
+        // ── IModule ──────────────────────────────────────────────────────────
 
         public void Init()
         {
@@ -83,16 +82,14 @@ namespace PhantombiteCore.Modules
             MyAPIGateway.Utilities.MessageEntered += OnMessageEntered;
             MyAPIGateway.Utilities.RegisterMessageHandler(1995000L, OnModRegistration);
             MyAPIGateway.Utilities.RegisterMessageHandler(1995999L, OnLogReceived);
-            // Netzwerkpakete für Client ↔ Server Command-Routing
-            MyAPIGateway.Multiplayer.RegisterMessageHandler(CMD_TO_SERVER_PACKET,      OnClientCmdReceived);
+            MyAPIGateway.Multiplayer.RegisterMessageHandler(CMD_TO_SERVER_PACKET,       OnClientCmdReceived);
             MyAPIGateway.Multiplayer.RegisterMessageHandler(CMDRESULT_TO_CLIENT_PACKET, OnServerCmdResultReceived);
             _initialized = true;
-            LoggerModule.Info(MOD, MODULE, "Initialized — Prefix: " + PREFIX);
+            PBLog.Log(MOD, MODULE, "Initialisiert — Prefix: " + PREFIX);
         }
 
         public void Update()
         {
-            // Pending Commands auf Timeout prüfen (alle 60 Ticks = 1 Sek)
             _timeoutCheckTick++;
             if (_timeoutCheckTick < 60) return;
             _timeoutCheckTick = 0;
@@ -105,8 +102,7 @@ namespace PhantombiteCore.Modules
 
             foreach (var key in expired)
             {
-                LoggerModule.Warn(MOD, MODULE, "Command Timeout — keine Antwort: " + key);
-                LoggerModule.Trace(MOD, MODULE, $"Timeout entfernt: '{key}', Pending verbleibend: {_pendingCommands.Count - 1}");
+                PBLog.Warn(MOD, MODULE, "Command Timeout — keine Antwort: " + key);
                 _pendingCommands.Remove(key);
             }
         }
@@ -121,37 +117,32 @@ namespace PhantombiteCore.Modules
                 MyAPIGateway.Utilities.MessageEntered -= OnMessageEntered;
                 MyAPIGateway.Utilities.UnregisterMessageHandler(1995000L, OnModRegistration);
                 MyAPIGateway.Utilities.UnregisterMessageHandler(1995999L, OnLogReceived);
-                MyAPIGateway.Multiplayer.UnregisterMessageHandler(CMD_TO_SERVER_PACKET,      OnClientCmdReceived);
+                MyAPIGateway.Multiplayer.UnregisterMessageHandler(CMD_TO_SERVER_PACKET,       OnClientCmdReceived);
                 MyAPIGateway.Multiplayer.UnregisterMessageHandler(CMDRESULT_TO_CLIENT_PACKET, OnServerCmdResultReceived);
             }
             _initialized = false;
         }
 
-        // ── Public API für andere Mods ────────────────────────────────────────
+        // ── Mod Registrierung ────────────────────────────────────────────────
 
-        public void RegisterMod(string modName, string description)
+        private void RegisterMod(string modName, string description)
         {
             modName = modName.ToLower();
             _modDescriptions[modName] = description;
             if (!_modCommands.ContainsKey(modName))
                 _modCommands[modName] = new List<CommandInfo>();
-            LoggerModule.Info(MOD, MODULE, "Mod registriert: " + modName);
         }
 
-        public void RegisterCommand(string modName, string commandName, string description, bool adminOnly, Action<IMyPlayer, string[]> handler)
+        private void RegisterCommand(string modName, string commandName, string description, bool adminOnly, Action<IMyPlayer, string[]> handler)
         {
             modName     = modName.ToLower();
             commandName = commandName.ToLower();
             if (!_modCommands.ContainsKey(modName))
                 _modCommands[modName] = new List<CommandInfo>();
             _modCommands[modName].Add(new CommandInfo(commandName, description, adminOnly, handler));
-            LoggerModule.Info(MOD, MODULE, "Command registriert: " + modName + " " + commandName + " (Admin: " + adminOnly + ")");
+            PBLog.Log(MOD, MODULE, "Command: " + modName + " — " + commandName + (adminOnly ? " [A]" : ""), 1);
         }
 
-        /// <summary>
-        /// Prueft ob ein Mod ausschliesslich Admin-Commands hat.
-        /// Sobald ein adminOnly=false Command existiert → false.
-        /// </summary>
         private bool IsAdminOnlyMod(string modName)
         {
             if (!_modCommands.ContainsKey(modName)) return true;
@@ -160,10 +151,8 @@ namespace PhantombiteCore.Modules
             return true;
         }
 
-        /// <summary>
-        /// Empfängt Registrierungsnachrichten von anderen Mods.
-        /// Format: "REGISTER|modname|description|channel|cmd1:adminOnly:desc|cmd2:adminOnly:desc|..."
-        /// </summary>
+        // ── Nachrichten-Handler ──────────────────────────────────────────────
+
         private void OnModRegistration(object data)
         {
             try
@@ -172,23 +161,44 @@ namespace PhantombiteCore.Modules
                 if (string.IsNullOrEmpty(msg)) return;
 
                 if (msg.StartsWith("CMDRESULT|")) { OnCmdResult(msg); return; }
-
                 if (!msg.StartsWith("REGISTER|")) return;
 
                 string[] parts = msg.Split('|');
                 if (parts.Length < 4) return;
 
-                string modName    = parts[1].ToLower();
-                string modDesc    = parts[2];
-                long   channel    = 0;
-                if (!long.TryParse(parts[3], out channel)) return;
+                string modName = parts[1].ToLower();
+                string modDesc = parts[2];
 
-                // Mod registrieren
+                // Backward-Compat: parts[3] kann version ODER channel sein
+                string version;
+                long   channel;
+                int cmdOffset;
+
+                if (long.TryParse(parts[3], out channel))
+                {
+                    // Altes Format: kein version-Feld
+                    version   = "?.?.?";
+                    cmdOffset = 4;
+                }
+                else
+                {
+                    // Neues Format: parts[3] = version, parts[4] = channel
+                    version = parts[3];
+                    if (parts.Length < 5 || !long.TryParse(parts[4], out channel)) return;
+                    cmdOffset = 5;
+                }
+
                 RegisterMod(modName, modDesc);
-                _modChannels[channel] = modName;
+                _modChannels[channel]  = modName;
 
-                // Commands registrieren
-                for (int i = 4; i < parts.Length; i++)
+                // Versions-Änderung prüfen → automatischer Performance-Reset
+                string oldVersion;
+                if (_modVersions.TryGetValue(modName, out oldVersion) && oldVersion != version && oldVersion != "?.?.?")
+                    _performanceModule?.OnModVersionChanged(modName, oldVersion, version);
+
+                _modVersions[modName] = version;
+
+                for (int i = cmdOffset; i < parts.Length; i++)
                 {
                     string[] cmdParts = parts[i].Split(':');
                     if (cmdParts.Length < 3) continue;
@@ -196,54 +206,42 @@ namespace PhantombiteCore.Modules
                     string cmdName   = cmdParts[0];
                     bool   adminOnly = cmdParts[1] == "1";
                     string cmdDesc   = cmdParts[2];
-                    long   ch        = channel; // Closure-safe
+                    long   ch        = channel;
 
-                    // Handler schickt Command über Messaging an den Mod
                     RegisterCommand(modName, cmdName, cmdDesc, adminOnly,
                         (player, args) => SendCommandToMod(player, ch, cmdName, args));
                 }
 
-                var cmdNames = new System.Text.StringBuilder();
-                foreach (var cmd in _modCommands[modName])
-                    cmdNames.Append(cmd.Name + (cmd.AdminOnly ? "[A]" : "") + " ");
-                LoggerModule.Info(MOD, MODULE, "Mod registriert: " + modName + " (Kanal: " + channel + ") — Commands: " + cmdNames.ToString().Trim());
+                // Zusammenfassung im Log (Level 0 — immer sichtbar)
+                int cmdCount = _modCommands.ContainsKey(modName) ? _modCommands[modName].Count : 0;
+                PBLog.Log(MOD, MODULE,
+                    PadRight(CapFirst(modName), 18) + " v" + PadRight(version, 8) +
+                    ": " + cmdCount + " Commands registriert");
 
-                // Dem Mod sofort seinen Debug-Level mitteilen
                 SendLogLevel(channel, modName);
+                _performanceModule?.OnModRegistered(modName);
             }
             catch (Exception ex)
             {
-                LoggerModule.Error(MOD, MODULE, "Fehler in OnModRegistration", ex);
+                PBLog.Error(MOD, MODULE, "Fehler in OnModRegistration", ex);
             }
         }
 
-        /// <summary>
-        /// Sendet den aktuellen Log-Level an einen Mod.
-        /// Format: "LOGLEVEL|normal|debug|trace"
-        /// </summary>
         private void SendLogLevel(long channel, string modName)
         {
             try
             {
-                // Mod-Namen zu globalem Namen konvertieren z.B. "artefact" → "Phantombite_Artefact"
                 string fullName = "Phantombite_" + char.ToUpper(modName[0]) + modName.Substring(1);
-                LoggerModule.LogLevel level = LoggerModule.GetLevel(fullName);
-                string levelStr = level == LoggerModule.LogLevel.Trace ? "trace"
-                                : level == LoggerModule.LogLevel.Debug  ? "debug"
-                                : "normal";
-                MyAPIGateway.Utilities.SendModMessage(channel, "LOGLEVEL|" + levelStr);
-                LoggerModule.Info(MOD, MODULE, "LOGLEVEL gesendet an " + modName + ": " + levelStr);
+                int    level    = PBLog.GetLevel(fullName);
+                MyAPIGateway.Utilities.SendModMessage(channel, "LOGLEVEL|" + level);
+                PBLog.Log(MOD, MODULE, "LOGLEVEL " + level + " → " + modName, 1);
             }
             catch (Exception ex)
             {
-                LoggerModule.Error(MOD, MODULE, "Fehler in SendLogLevel", ex);
+                PBLog.Error(MOD, MODULE, "Fehler in SendLogLevel", ex);
             }
         }
 
-        /// <summary>
-        /// Empfängt Log-Nachrichten von anderen Mods über Kanal 1995999.
-        /// Format: "LOG|Phantombite_Artefact|DEBUG|Artefact_Controller|Nachricht"
-        /// </summary>
         private void OnLogReceived(object data)
         {
             try
@@ -259,205 +257,124 @@ namespace PhantombiteCore.Modules
                 string module   = parts[3];
                 string message  = parts[4];
 
+                // Unterstützt altes Format (WARN/ERROR/INFO/DEBUG/TRACE)
+                // und neues Format (0/1/2)
                 switch (levelStr)
                 {
-                    case "WARN":  LoggerModule.Warn(modName, module, message);  break;
-                    case "ERROR": LoggerModule.Error(modName, module, message); break;
-                    case "INFO":  LoggerModule.Info(modName, module, message);  break;
-                    case "DEBUG": LoggerModule.Debug(modName, module, message); break;
-                    case "TRACE": LoggerModule.Trace(modName, module, message); break;
+                    case "WARN":  case "warn":  PBLog.Warn(modName, module, message);          break;
+                    case "ERROR": case "error": PBLog.Error(modName, module, message);         break;
+                    case "INFO":  case "0":     PBLog.Log(modName, module, message, 0);        break;
+                    case "DEBUG": case "1":     PBLog.Log(modName, module, message, 1);        break;
+                    case "TRACE": case "2":     PBLog.Log(modName, module, message, 2);        break;
+                    default:                    PBLog.Log(modName, module, message, 0);        break;
                 }
             }
             catch (Exception ex)
             {
-                LoggerModule.Error(MOD, MODULE, "Fehler in OnLogReceived", ex);
+                PBLog.Error(MOD, MODULE, "Fehler in OnLogReceived", ex);
             }
         }
 
-        /// <summary>
-        /// Empfängt CMDRESULT von einem Mod.
-        /// Format: "CMDRESULT|key|ok|message" — key = "modName|cmdName|args|steamId"
-        /// </summary>
         private void OnCmdResult(string msg)
         {
             try
             {
-                // Format: CMDRESULT|modName|cmdName|args|steamId|status|message
                 string[] parts = msg.Split(new[] { '|' }, 7);
                 if (parts.Length < 7) return;
 
-                string key     = parts[1] + "|" + parts[2] + "|" + parts[3] + "|" + parts[4];
-                string status  = parts[5];
-                string message = parts[6];
+                string key    = parts[1] + "|" + parts[2] + "|" + parts[3] + "|" + parts[4];
+                string status = parts[5];
+                string result = parts[6];
 
-                LoggerModule.Trace(MOD, MODULE, $"CMDRESULT empfangen: Key='{key}', Status='{status}', Nachricht='{message}'");
+                ulong targetSteamId = 0;
+                ulong.TryParse(parts[4], out targetSteamId);
 
                 PendingCommand pending;
-                if (!_pendingCommands.TryGetValue(key, out pending))
+                if (_pendingCommands.TryGetValue(key, out pending))
                 {
-                    LoggerModule.Warn(MOD, MODULE, "CMDRESULT ohne pending Command: " + key);
-                    return;
-                }
-
-                double durationMs = (DateTime.UtcNow - pending.SentAt).TotalMilliseconds;
-                ulong targetSteamId = pending.SteamId;
-                _pendingCommands.Remove(key);
-
-                bool ok = status == "ok";
-                LoggerModule.Debug(MOD, MODULE, $"CMDRESULT: '{key}' — {status} — '{message}' ({durationMs:F0}ms)");
-                LoggerModule.Trace(MOD, MODULE, $"Pending-Eintrag entfernt: Key='{key}', Dauer={durationMs:F0}ms, Pending verbleibend: {_pendingCommands.Count}");
-
-                if (_modDetector != null && !_modDetector.IsSingleplayer && MyAPIGateway.Multiplayer.IsServer)
-                {
-                    // Dedicated Server: CMDRESULT per Netzwerkpaket an den Client zurückschicken
-                    byte[] resultData = Encoding.UTF8.GetBytes(msg);
-                    MyAPIGateway.Multiplayer.SendMessageTo(CMDRESULT_TO_CLIENT_PACKET, resultData, targetSteamId);
-                    LoggerModule.Debug(MOD, MODULE, $"CMDRESULT via Netzwerk an Client {targetSteamId} gesendet.");
+                    double ms = (DateTime.UtcNow - pending.SentAt).TotalMilliseconds;
+                    _pendingCommands.Remove(key);
+                    PBLog.Log(MOD, MODULE, "CMDRESULT: " + key + " — " + status + " (" + ms.ToString("F0") + "ms)", 1);
                 }
                 else
                 {
-                    ShowHud(message, ok);
+                    PBLog.Log(MOD, MODULE, "CMDRESULT (server): " + status + " — " + result, 1);
+                }
+
+                bool ok = status == "ok";
+
+                if (_modDetector != null && !_modDetector.IsSingleplayer && MyAPIGateway.Multiplayer.IsServer)
+                {
+                    byte[] resultData = Encoding.UTF8.GetBytes(msg);
+                    MyAPIGateway.Multiplayer.SendMessageTo(CMDRESULT_TO_CLIENT_PACKET, resultData, targetSteamId);
+                }
+                else
+                {
+                    ShowHud(result, ok);
                 }
             }
             catch (Exception ex)
             {
-                LoggerModule.Error(MOD, MODULE, "Fehler in OnCmdResult", ex);
+                PBLog.Error(MOD, MODULE, "Fehler in OnCmdResult", ex);
             }
         }
 
-        /// <summary>
-        /// Empfängt CMD-Paket vom Client auf dem Server.
-        /// Extrahiert Kanal + CMD-Nachricht und leitet sie lokal an den Mod weiter.
-        /// </summary>
         private void OnClientCmdReceived(byte[] data)
         {
             try
             {
                 if (!MyAPIGateway.Multiplayer.IsServer) return;
-
                 string packet = Encoding.UTF8.GetString(data);
                 int sep = packet.IndexOf('|');
                 if (sep <= 0) return;
-
                 long channel;
                 if (!long.TryParse(packet.Substring(0, sep), out channel)) return;
-
                 string msg = packet.Substring(sep + 1);
-                LoggerModule.Debug(MOD, MODULE, $"CMD-Paket vom Client empfangen — Kanal: {channel}, Nachricht: '{msg}'");
                 MyAPIGateway.Utilities.SendModMessage(channel, msg);
             }
             catch (Exception ex)
             {
-                LoggerModule.Error(MOD, MODULE, "Fehler in OnClientCmdReceived", ex);
+                PBLog.Error(MOD, MODULE, "Fehler in OnClientCmdReceived", ex);
             }
         }
 
-        /// <summary>
-        /// Empfängt CMDRESULT-Paket vom Server auf dem Client.
-        /// Parst das Ergebnis und zeigt es dem Spieler an.
-        /// </summary>
         private void OnServerCmdResultReceived(byte[] data)
         {
             try
             {
                 if (MyAPIGateway.Multiplayer.IsServer) return;
-
                 string msg = Encoding.UTF8.GetString(data);
-                LoggerModule.Debug(MOD, MODULE, $"CMDRESULT-Paket vom Server empfangen: '{msg}'");
-
-                // Format: CMDRESULT|modName|cmdName|args|steamId|status|message
                 string[] parts = msg.Split(new[] { '|' }, 7);
                 if (parts.Length < 7) return;
-
-                string status  = parts[5];
-                string message = parts[6];
-                bool ok = status == "ok";
-                ShowHud(message, ok);
+                bool ok = parts[5] == "ok";
+                ShowHud(parts[6], ok);
             }
             catch (Exception ex)
             {
-                LoggerModule.Error(MOD, MODULE, "Fehler in OnServerCmdResultReceived", ex);
+                PBLog.Error(MOD, MODULE, "Fehler in OnServerCmdResultReceived", ex);
             }
         }
 
-        private void ShowHud(string message, bool success)
-        {
-            try
-            {
-                var font = success ? MyFontEnum.Green : MyFontEnum.Red;
-                MyAPIGateway.Utilities.ShowNotification("[PB] " + message, 3000, font);
-            }
-            catch { }
-        }
+        // ── READY senden ─────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Schickt einen Command-Aufruf an einen Mod über dessen Kanal.
-        /// Format: "CMD|cmdname|arg1|arg2|STEAM:steamId"
-        /// </summary>
-        private void SendCommandToMod(IMyPlayer player, long channel, string commandName, string[] args)
-        {
-            try
-            {
-                string argsJoined = args != null && args.Length > 0 ? string.Join("|", args) : "";
-                string modName    = _modChannels.ContainsKey(channel) ? _modChannels[channel] : channel.ToString();
-                string key        = modName + "|" + commandName + "|" + argsJoined + "|" + player.SteamUserId;
-
-                LoggerModule.Trace(MOD, MODULE, $"Deduplizierungs-Check: Key='{key}' — {(_pendingCommands.ContainsKey(key) ? "DUPLIKAT" : "neu")}");
-
-                // Duplikat-Check
-                if (_pendingCommands.ContainsKey(key))
-                {
-                    ShowHud(modName + " " + commandName + ": bereits in Bearbeitung", false);
-                    LoggerModule.Debug(MOD, MODULE, $"Command Duplikat ignoriert: '{player.DisplayName}' (SteamId: {player.SteamUserId}) — {key}");
-                    return;
-                }
-
-                string msg = "CMD|" + commandName;
-                if (!string.IsNullOrEmpty(argsJoined)) msg += "|" + argsJoined;
-                msg += "|STEAM:" + player.SteamUserId;
-
-                _pendingCommands[key] = new PendingCommand { SteamId = player.SteamUserId, SentAt = DateTime.UtcNow };
-
-                if (_modDetector != null && !_modDetector.IsSingleplayer)
-                {
-                    // Dedicated Server: CMD per Netzwerkpaket an Server-Core weiterleiten
-                    // Server-Core empfängt, leitet lokal an den Mod weiter via SendModMessage
-                    string packet = channel + "|" + msg;
-                    byte[] packetData = Encoding.UTF8.GetBytes(packet);
-                    MyAPIGateway.Multiplayer.SendMessageToServer(CMD_TO_SERVER_PACKET, packetData);
-                    LoggerModule.Debug(MOD, MODULE, $"Command via Netzwerk an Server — Mod: '{modName}', Kanal: {channel}, Nachricht: '{msg}'");
-                }
-                else
-                {
-                    // Singleplayer: lokal via SendModMessage
-                    MyAPIGateway.Utilities.SendModMessage(channel, msg);
-                    LoggerModule.Debug(MOD, MODULE, $"Command lokal weitergeleitet — Mod: '{modName}', Kanal: {channel}, Nachricht: '{msg}'");
-                }
-                LoggerModule.Trace(MOD, MODULE, $"Pending-Eintrag erstellt: Key='{key}', SentAt={DateTime.UtcNow:HH:mm:ss.fff}, Pending gesamt: {_pendingCommands.Count}");
-            }
-            catch (Exception ex)
-            {
-                LoggerModule.Error(MOD, MODULE, "Fehler in SendCommandToMod", ex);
-            }
-        }
-
-        /// <summary>
-        /// Wird von Session nach InitAll() aufgerufen.
-        /// Schickt READY an alle aktiven Mod-Kanäle damit sie sich registrieren können.
-        /// </summary>
         public void SendReadyToActiveMods(ModDetector modDetector)
         {
             var modChannels = new Dictionary<ulong, long>
             {
-                { ModRegistry.Artefact,           1995001L },
-                { ModRegistry.CableWinch,         1995002L },
-                { ModRegistry.Creatures,          1995003L },
-                { ModRegistry.Economy,            1995004L },
-                { ModRegistry.Encounter,          1995005L },
-                { ModRegistry.ServerAddon,        1995006L },
-                { ModRegistry.Sulvax,             1995007L },
-                { ModRegistry.SulvaxRespawnRover, 1995008L },
-                { ModRegistry.AutoTransfer,       1995009L }
+                { ModRegistry.Artefact,           ModRegistry.ChannelArtefact           },
+                { ModRegistry.CableWinch,         ModRegistry.ChannelCableWinch         },
+                { ModRegistry.Creatures,          ModRegistry.ChannelCreatures          },
+                { ModRegistry.Economy,            ModRegistry.ChannelEconomy            },
+                { ModRegistry.Encounter,          ModRegistry.ChannelEncounter          },
+                { ModRegistry.ServerAddon,        ModRegistry.ChannelServerAddon        },
+                { ModRegistry.Sulvax,             ModRegistry.ChannelSulvax             },
+                { ModRegistry.SulvaxRespawnRover, ModRegistry.ChannelSulvaxRespawnRover },
+                { ModRegistry.AutoTransfer,       ModRegistry.ChannelAutoTransfer       },
+                { ModRegistry.PlanetSpawner,      ModRegistry.ChannelPlanetSpawner      },
+                { ModRegistry.AdminProjektor,     ModRegistry.ChannelAdminProjektor     },
+                { ModRegistry.WaterElectrolyzer,  ModRegistry.ChannelWaterElectrolyzer  },
+                { ModRegistry.Mining,             ModRegistry.ChannelMining             },
+                { ModRegistry.StationRefill,      ModRegistry.ChannelStationRefill      },
             };
 
             int sent = 0;
@@ -466,24 +383,23 @@ namespace PhantombiteCore.Modules
                 string source = modDetector.GetLoadSource(kvp.Key);
                 if (source == null)
                 {
-                    LoggerModule.Debug(MOD, MODULE, "READY uebersprungen — nicht aktiv: " + ModRegistry.GetName(kvp.Key));
+                    PBLog.Log(MOD, MODULE, "READY übersprungen — nicht aktiv: " + ModRegistry.GetName(kvp.Key), 1);
                     continue;
                 }
                 try
                 {
                     MyAPIGateway.Utilities.SendModMessage(kvp.Value, "READY");
-                    LoggerModule.Info(MOD, MODULE, "READY gesendet an " + ModRegistry.GetName(kvp.Key) + " [" + source + "] (Kanal: " + kvp.Value + ")");
                     sent++;
                 }
                 catch (Exception ex)
                 {
-                    LoggerModule.Error(MOD, MODULE, "Fehler beim Senden von READY an " + ModRegistry.GetName(kvp.Key), ex);
+                    PBLog.Error(MOD, MODULE, "READY fehlgeschlagen — " + ModRegistry.GetName(kvp.Key), ex);
                 }
             }
-            LoggerModule.Info(MOD, MODULE, "READY gesendet an " + sent + "/" + modChannels.Count + " Mods");
+            PBLog.Log(MOD, MODULE, "READY gesendet: " + sent + "/" + modChannels.Count + " Mods");
         }
 
-        // ── Message Handler ───────────────────────────────────────────────────
+        // ── Chat-Command Parsing ─────────────────────────────────────────────
 
         private void OnMessageEntered(string messageText, ref bool sendToOthers)
         {
@@ -491,7 +407,6 @@ namespace PhantombiteCore.Modules
             {
                 string trimmed = messageText.Trim();
 
-                // Hinweis bei generischen Help-Nachrichten — NICHT abfangen
                 if (trimmed.Equals("help",  StringComparison.OrdinalIgnoreCase) ||
                     trimmed.Equals("/help", StringComparison.OrdinalIgnoreCase) ||
                     trimmed.Equals("!help", StringComparison.OrdinalIgnoreCase))
@@ -509,31 +424,30 @@ namespace PhantombiteCore.Modules
                 IMyPlayer p = MyAPIGateway.Session?.Player;
                 if (p == null) return;
 
-                // Beide Prefixe entfernen
                 string commandText = trimmed.StartsWith("/pbc", StringComparison.OrdinalIgnoreCase)
                     ? trimmed.Substring(4).Trim()
                     : trimmed.Substring(PREFIX.Length).Trim();
-
-                LoggerModule.Trace(MOD, MODULE, $"Eingabe von '{p.DisplayName}' (SteamId: {p.SteamUserId}): '{trimmed}'");
 
                 if (string.IsNullOrWhiteSpace(commandText)) { CmdHelp(p, new string[0]); return; }
 
                 string[] tokens = commandText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 ParseAndExecute(p, tokens);
             }
-            catch (Exception ex) { LoggerModule.Error(MOD, MODULE, "Fehler in OnMessageEntered", ex); }
+            catch (Exception ex) { PBLog.Error(MOD, MODULE, "Fehler in OnMessageEntered", ex); }
         }
 
         private void ParseAndExecute(IMyPlayer player, string[] tokens)
         {
             try
             {
+                // Jeden Command mit Spielernamen loggen
+                // Command + Spieler in SE-Log und Phantombite-Log
+                PBLog.Log(MOD, MODULE, player.DisplayName + " (" + player.SteamUserId + ") -> " + PREFIX + " " + string.Join(" ", tokens));
+
                 string first = tokens[0].ToLower();
-                LoggerModule.Trace(MOD, MODULE, $"ParseAndExecute: '{player.DisplayName}' (SteamId: {player.SteamUserId}) — Tokens: [{string.Join(", ", tokens)}]");
 
                 if (first == "help")
                 {
-                    // !pbc help economy <seite> direkt weiterleiten
                     if (tokens.Length > 1 && _modCommands.ContainsKey(tokens[1].ToLower()))
                     {
                         int page = 1;
@@ -553,6 +467,22 @@ namespace PhantombiteCore.Modules
                     return;
                 }
 
+                if (first == "players")
+                {
+                    string list = _playerTracker != null
+                        ? _playerTracker.GetPlayerListText()
+                        : "PlayerTracker nicht verfügbar";
+                    Send(player, list);
+                    return;
+                }
+
+                if (first == "perf")
+                {
+                    if (!IsAdmin(player)) { Send(player, "Blockiert: Admin-Rechte erforderlich."); return; }
+                    CmdPerf(player, SubArgs(tokens, 1));
+                    return;
+                }
+
                 if (first == "log")
                 {
                     if (!IsAdmin(player)) { Send(player, "Blockiert: Admin-Rechte erforderlich."); return; }
@@ -562,10 +492,8 @@ namespace PhantombiteCore.Modules
 
                 if (_modCommands.ContainsKey(first))
                 {
-                    // Admin-only Mod: normale Spieler werden blockiert
                     if (IsAdminOnlyMod(first) && !IsAdmin(player))
                     {
-                        LoggerModule.Debug(MOD, MODULE, $"Admin-Blockierung: '{player.DisplayName}' (SteamId: {player.SteamUserId}) versuchte Admin-Mod '{first}'");
                         Send(player, "Blockiert: Admin-Rechte erforderlich.");
                         return;
                     }
@@ -581,42 +509,36 @@ namespace PhantombiteCore.Modules
                         return;
                     }
 
-                    // Prüfen ob zweites Token eine ID oder "all" ist
-                    // !pbc artefact 1 reset  oder  !pbc artefact all reset
                     int  parsedId = 0;
                     bool isId     = int.TryParse(second, out parsedId);
                     bool isAll    = second == "all";
 
                     if ((isId || isAll) && tokens.Length > 2)
                     {
-                        string cmdName  = tokens[2].ToLower();
-                        // ID/all als erstes Arg übergeben, Rest dahinter
-                        int    extraLen = tokens.Length - 3;
-                        string[] cmdArgs = new string[1 + extraLen];
-                        cmdArgs[0] = second; // "1" oder "all"
+                        string cmdName    = tokens[2].ToLower();
+                        int    extraLen   = tokens.Length - 3;
+                        string[] cmdArgs  = new string[1 + extraLen];
+                        cmdArgs[0] = second;
                         Array.Copy(tokens, 3, cmdArgs, 1, extraLen);
                         ExecuteModCommand(player, first, cmdName, cmdArgs);
                         return;
                     }
 
-                    // Normal: !pbc artefact reset
                     ExecuteModCommand(player, first, second, SubArgs(tokens, 2));
                     return;
                 }
 
-                LoggerModule.Debug(MOD, MODULE, $"Unbekannter Command: '{player.DisplayName}' tippte '{first}'");
                 Send(player, "Unbekannter Command: " + first + " — tippe " + PREFIX + " help");
             }
-            catch (Exception ex) { LoggerModule.Error(MOD, MODULE, "Fehler in ParseAndExecute", ex); }
+            catch (Exception ex) { PBLog.Error(MOD, MODULE, "Fehler in ParseAndExecute", ex); }
         }
 
-        // ── Core Command Handler ──────────────────────────────────────────────
+        // ── Commands ─────────────────────────────────────────────────────────
 
         private void CmdHelp(IMyPlayer player, string[] args)
         {
             bool isAdmin = IsAdmin(player);
 
-            // !pbc help economy <seite> direkt weiterleiten
             if (args != null && args.Length > 0)
             {
                 string first = args[0].ToLower();
@@ -630,8 +552,6 @@ namespace PhantombiteCore.Modules
             }
 
             var lines = new List<string>();
-
-            // Help Commands zuerst
             lines.Add("!pbc help <Seitenzahl>");
             lines.Add("  Für eine andere Seite");
 
@@ -642,21 +562,25 @@ namespace PhantombiteCore.Modules
                 lines.Add("  Für " + CapFirst(kvp.Key) + " Help");
             }
 
-            // Dann Status
+            lines.Add("!pbc players");
+            lines.Add("  Aktive Spieler mit Join-Zeit anzeigen");
             lines.Add("!pbc status");
-            lines.Add("  Aktive Mods und Debug-Status");
+            lines.Add("  Aktive Mods, Versionen und Debug-Level");
 
-            // Admin Commands nur für Admins
             if (isAdmin)
             {
-                lines.Add("!pbc debug <mod> normal|debug|trace");
-                lines.Add("  Debug-Level setzen (1x=temporär, 2x=permanent)");
-                lines.Add("!pbc debug all normal|debug|trace");
-                lines.Add("  Debug-Level setzen (1x=temporär, 2x=permanent)");
-                lines.Add("!pbc log copy");
-                lines.Add("  Log in Zwischenablage");
                 lines.Add("!pbc log show");
-                lines.Add("  Letzte Zeilen im Chat");
+                lines.Add("  Letzte Log-Zeilen im Chat anzeigen");
+                lines.Add("!pbc log copy");
+                lines.Add("  Kompletten Log in Zwischenablage");
+                lines.Add("!pbc debug <mod|all> <0|1|2>");
+                lines.Add("  Debug-Level setzen (1x=temporär, 2x=permanent)");
+                lines.Add("!pbc perf status");
+                lines.Add("  Performance Level aller Mods + Top Verursacher");
+                lines.Add("!pbc perf log");
+                lines.Add("  Letzte SimSpeed-Ereignisse (10min RAM-Log)");
+                lines.Add("!pbc perf reset [mod]");
+                lines.Add("  Performance Level zurücksetzen");
             }
 
             ShowPage(player, lines, PREFIX + " help", args, "Phantombite Help");
@@ -695,55 +619,16 @@ namespace PhantombiteCore.Modules
 
             var lines = new List<string>();
             lines.Add("Session: " + sessionStr + " | Mode: " + modeStr);
-            lines.Add("[Debug-Status]");
+            lines.Add("[Registrierte Mods]");
 
-            string[] allMods = {
-                "Phantombite_Core", "Phantombite_Artefact", "Phantombite_CableWinch",
-                "Phantombite_Creatures", "Phantombite_Economy", "Phantombite_Encounter",
-                "Phantombite_Server_Addon", "Phantombite_Sulvax", "Phantombite_SulvaxRespawnRover",
-                "Phantombite_AutoTransfer"
-            };
-
-            // Mod-Name zu ID Mapping für ModDetector
-            var modIds = new Dictionary<string, ulong>
+            foreach (var kvp in _modDescriptions)
             {
-                { "Phantombite_Core",               ModRegistry.Core },
-                { "Phantombite_Artefact",           ModRegistry.Artefact },
-                { "Phantombite_CableWinch",         ModRegistry.CableWinch },
-                { "Phantombite_Creatures",           ModRegistry.Creatures },
-                { "Phantombite_Economy",            ModRegistry.Economy },
-                { "Phantombite_Encounter",          ModRegistry.Encounter },
-                { "Phantombite_Server_Addon",       ModRegistry.ServerAddon },
-                { "Phantombite_Sulvax",             ModRegistry.Sulvax },
-                { "Phantombite_SulvaxRespawnRover", ModRegistry.SulvaxRespawnRover },
-                { "Phantombite_AutoTransfer",       ModRegistry.AutoTransfer }
-            };
-
-            foreach (var mod in allMods)
-            {
-                // Core immer anzeigen, andere nur wenn aktiv
-                if (mod != "Phantombite_Core" && _modDetector != null)
-                {
-                    ulong modId;
-                    if (modIds.TryGetValue(mod, out modId) && !_modDetector.IsActive(modId))
-                        continue;
-                }
-
-                string shortName = mod.Replace("Phantombite_", "");
-                LoggerModule.LogLevel current = LoggerModule.GetLevel(mod);
-                bool isTemp = _tempLevels.ContainsKey(mod);
-
-                string levelStr = current.ToString();
-                if (isTemp) levelStr += " (Temporär)";
-
-                lines.Add(PadRight(shortName, 20) + levelStr);
-            }
-
-            if (_modDescriptions.Count > 0)
-            {
-                lines.Add("[Registrierte Mods]");
-                foreach (var kvp in _modDescriptions)
-                    lines.Add(kvp.Key + " — " + kvp.Value);
+                string version = _modVersions.ContainsKey(kvp.Key) ? "v" + _modVersions[kvp.Key] : "v?.?.?";
+                string fullName = "Phantombite_" + CapFirst(kvp.Key);
+                int    level    = PBLog.GetLevel(fullName);
+                bool   isTemp   = _tempLevels.ContainsKey(fullName);
+                string levelStr = "Debug: " + level + (isTemp ? " (Temporär)" : "");
+                lines.Add("  " + PadRight(CapFirst(kvp.Key), 18) + " " + PadRight(version, 10) + levelStr);
             }
 
             Send(player, "=== Phantombite Status ===");
@@ -755,100 +640,77 @@ namespace PhantombiteCore.Modules
         {
             if (args.Length < 2)
             {
-                Send(player, "Verwendung: " + PREFIX + " debug <mod|all> <normal|debug|trace>");
+                Send(player, "Verwendung: " + PREFIX + " debug <mod|all> <0|1|2>");
                 return;
             }
 
             string target   = args[0].ToLower();
             string levelStr = args[1].ToLower();
+            int    level;
 
-            LoggerModule.LogLevel level;
-            if      (levelStr == "normal") level = LoggerModule.LogLevel.Normal;
-            else if (levelStr == "debug")  level = LoggerModule.LogLevel.Debug;
-            else if (levelStr == "trace")  level = LoggerModule.LogLevel.Trace;
-            else { Send(player, "Unbekannter Level: " + levelStr + " — erlaubt: normal, debug, trace"); return; }
+            if (!int.TryParse(levelStr, out level) || level < 0 || level > 2)
+            {
+                Send(player, "Unbekannter Level: " + levelStr + " — erlaubt: 0, 1, 2");
+                return;
+            }
+
+            var allModNames = new List<string>
+            {
+                "Phantombite_Core",           "Phantombite_AdminProjektor",
+                "Phantombite_Artefact",       "Phantombite_AutoTransfer",
+                "Phantombite_CableWinch",     "Phantombite_Creatures",
+                "Phantombite_Economy",        "Phantombite_Encounter",
+                "Phantombite_Mining",         "Phantombite_PlanetSpawner",
+                "Phantombite_Server_Addon",   "Phantombite_StationRefill",
+                "Phantombite_Sulvax",         "Phantombite_SulvaxRespawnRover",
+                "Phantombite_WaterElectrolyzer"
+            };
 
             if (target == "all")
             {
-                var allModIds = new Dictionary<string, ulong>
-                {
-                    { "Phantombite_Core",               ModRegistry.Core },
-                    { "Phantombite_Artefact",           ModRegistry.Artefact },
-                    { "Phantombite_CableWinch",         ModRegistry.CableWinch },
-                    { "Phantombite_Creatures",           ModRegistry.Creatures },
-                    { "Phantombite_Economy",            ModRegistry.Economy },
-                    { "Phantombite_Encounter",          ModRegistry.Encounter },
-                    { "Phantombite_Server_Addon",       ModRegistry.ServerAddon },
-                    { "Phantombite_Sulvax",             ModRegistry.Sulvax },
-                    { "Phantombite_SulvaxRespawnRover", ModRegistry.SulvaxRespawnRover },
-                    { "Phantombite_AutoTransfer",       ModRegistry.AutoTransfer }
-                };
-                foreach (var kvp in allModIds)
-                {
-                    if (_modDetector != null && !_modDetector.IsActive(kvp.Value)) continue;
-                    SetDebugLevel(player, kvp.Key, level, true);
-                }
-                Send(player, "Alle aktiven Mods auf " + level + " gesetzt.");
+                foreach (var modName in allModNames)
+                    SetDebugLevel(player, modName, level, true);
+                Send(player, "Alle Mods auf Debug-Level " + level + " gesetzt.");
                 return;
             }
 
             string fullName = "Phantombite_" + CapFirst(target);
-
-            // Prüfen ob Mod aktiv ist
-            if (_modDetector != null)
+            if (!allModNames.Contains(fullName))
             {
-                var modIds = new Dictionary<string, ulong>
-                {
-                    { "Phantombite_Core",               ModRegistry.Core },
-                    { "Phantombite_Artefact",           ModRegistry.Artefact },
-                    { "Phantombite_CableWinch",         ModRegistry.CableWinch },
-                    { "Phantombite_Creatures",           ModRegistry.Creatures },
-                    { "Phantombite_Economy",            ModRegistry.Economy },
-                    { "Phantombite_Encounter",          ModRegistry.Encounter },
-                    { "Phantombite_Server_Addon",       ModRegistry.ServerAddon },
-                    { "Phantombite_Sulvax",             ModRegistry.Sulvax },
-                    { "Phantombite_SulvaxRespawnRover", ModRegistry.SulvaxRespawnRover },
-                    { "Phantombite_AutoTransfer",       ModRegistry.AutoTransfer }
-                };
-                ulong modId;
-                if (modIds.TryGetValue(fullName, out modId) && !_modDetector.IsActive(modId))
-                {
-                    Send(player, "Mod nicht aktiv: " + CapFirst(target));
-                    return;
-                }
+                Send(player, "Unbekannter Mod: " + target);
+                return;
             }
 
             SetDebugLevel(player, fullName, level, false);
         }
 
-        private void SetDebugLevel(IMyPlayer player, string modName, LoggerModule.LogLevel level, bool silent)
+        private void SetDebugLevel(IMyPlayer player, string modName, int level, bool silent)
         {
             bool alreadyTemp = _tempLevels.ContainsKey(modName) && _tempLevels[modName] == level;
-            bool isPermanent = !_tempLevels.ContainsKey(modName) && LoggerModule.GetLevel(modName) == level;
+            bool isPermanent = !_tempLevels.ContainsKey(modName) && PBLog.GetLevel(modName) == level;
             string shortName = modName.Replace("Phantombite_", "");
 
             if (alreadyTemp || isPermanent)
             {
                 _tempLevels.Remove(modName);
-                LoggerModule.SetLevel(modName, level);
+                PBLog.SetLevel(modName, level);
                 SaveDebugToConfig(modName, level);
-                if (!silent) Send(player, shortName + ": " + level + " — permanent gespeichert.");
-                LoggerModule.Info(MOD, MODULE, "Debug permanent: " + modName + " = " + level);
+                if (!silent) Send(player, shortName + ": Level " + level + " — permanent gespeichert.");
             }
             else
             {
-                _tempLevels[modName] = LoggerModule.GetLevel(modName);
-                LoggerModule.SetLevel(modName, level);
-                if (!silent) Send(player, shortName + ": " + level + " — temporär. Nochmal eingeben = permanent.");
-                LoggerModule.Info(MOD, MODULE, "Debug temporär: " + modName + " = " + level);
+                if (!_tempLevels.ContainsKey(modName))
+                    _tempLevels[modName] = PBLog.GetLevel(modName);
+                PBLog.SetLevel(modName, level);
+                if (!silent) Send(player, shortName + ": Level " + level + " — temporär. Nochmal = permanent.");
             }
 
-            // Mod über neuen Level informieren falls registriert
+            // LOGLEVEL an den Mod senden falls er registriert ist
             foreach (var kvp in _modChannels)
             {
                 if (_modDescriptions.ContainsKey(kvp.Value))
                 {
-                    string fullName = "Phantombite_" + char.ToUpper(kvp.Value[0]) + kvp.Value.Substring(1);
+                    string fullName = "Phantombite_" + CapFirst(kvp.Value);
                     if (fullName == modName)
                     {
                         SendLogLevel(kvp.Key, kvp.Value);
@@ -858,78 +720,148 @@ namespace PhantombiteCore.Modules
             }
         }
 
-        private void SaveDebugToConfig(string modName, LoggerModule.LogLevel level)
+        private void SaveDebugToConfig(string modName, int level)
         {
             try
             {
                 string content = FileManagerModule.ReadFile("Phantombite_GlobalConfig.ini", typeof(FileManagerModule));
                 if (content == null) return;
-                string oldKey = modName + "=";
+
+                string oldKey  = modName + "=";
                 string newLine = modName + "=" + level;
+
                 var rawLines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.None);
                 var sb = new StringBuilder();
                 foreach (var line in rawLines)
                     sb.AppendLine(line.TrimStart().StartsWith(oldKey) ? newLine : line);
+
                 FileManagerModule.WriteFile("Phantombite_GlobalConfig.ini", sb.ToString(), typeof(FileManagerModule));
             }
-            catch (Exception ex) { LoggerModule.Error(MOD, MODULE, "Fehler beim Speichern der Config", ex); }
+            catch (Exception ex)
+            {
+                PBLog.Error(MOD, MODULE, "Fehler beim Speichern der GlobalConfig", ex);
+            }
+        }
+
+        private void CmdPerf(IMyPlayer player, string[] args)
+        {
+            if (_performanceModule == null)
+            {
+                Send(player, "Performance Modul nicht verfügbar.");
+                return;
+            }
+
+            string sub = args.Length > 0 ? args[0].ToLower() : "status";
+
+            if (sub == "status")
+            {
+                Send(player, "=== Performance Status ===");
+                foreach (var line in _performanceModule.GetStatusText().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    Send(player, line);
+                return;
+            }
+
+            if (sub == "log")
+            {
+                Send(player, "=== Performance Log (letzte Ereignisse) ===");
+                foreach (var line in _performanceModule.GetRecentLog())
+                    Send(player, line);
+                return;
+            }
+
+            if (sub == "reset")
+            {
+                if (args.Length > 1)
+                {
+                    string mod = args[1].ToLower();
+                    _performanceModule.ResetMod(mod);
+                    Send(player, mod + " Performance Level zurückgesetzt.");
+                }
+                else
+                {
+                    _performanceModule.ResetAll();
+                    Send(player, "Alle Performance Level zurückgesetzt.");
+                }
+                return;
+            }
+
+            Send(player, "Verwendung: !pbc perf status | log | reset [mod]");
+        }
+
+        // ── Public Helfer für PerformanceModule ──────────────────────────────
+
+        /// <summary>Sendet eine Nachricht an einen registrierten Mod über seinen Kanal.</summary>
+        public void SendToMod(string modName, string message)
+        {
+            try
+            {
+                modName = modName.ToLower();
+                foreach (var kvp in _modChannels)
+                {
+                    if (kvp.Value == modName)
+                    {
+                        MyAPIGateway.Utilities.SendModMessage(kvp.Key, message);
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                PBLog.Error(MOD, MODULE, "Fehler in SendToMod (" + modName + ")", ex);
+            }
+        }
+
+        /// <summary>Gibt die registrierte Version eines Mods zurück.</summary>
+        public string GetModVersion(string modName)
+        {
+            string version;
+            return _modVersions.TryGetValue(modName.ToLower(), out version) ? version : "?.?.?";
+        }
+
+        /// <summary>Gibt alle aktuell registrierten Mod-Namen zurück.</summary>
+        public List<string> GetRegisteredMods()
+        {
+            return new List<string>(_modDescriptions.Keys);
         }
 
         private void CmdLog(IMyPlayer player, string[] args)
         {
-            if (args.Length == 0)
-            {
-                Send(player, "Verwendung: " + PREFIX + " log copy | " + PREFIX + " log show");
-                return;
-            }
+            if (_fileManager == null) { Send(player, "FileManager nicht verfügbar."); return; }
 
-            string index = FileManagerModule.ReadFile("Phantombite_LogIndex.txt", typeof(FileManagerModule));
-            if (index == null) { Send(player, "Kein Log-Index gefunden."); return; }
-
-            string[] indexLines = index.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            if (indexLines.Length == 0) { Send(player, "Log-Index ist leer."); return; }
-
-            string latestLog = indexLines[indexLines.Length - 1].Trim();
-            string content   = FileManagerModule.ReadFile(latestLog, typeof(FileManagerModule));
-            if (content == null) { Send(player, "Log-Datei nicht gefunden: " + latestLog); return; }
-
-            string sub = args[0].ToLower();
-
-            if (sub == "copy")
-            {
-                VRage.Utils.MyClipboardHelper.SetClipboard(content);
-                Send(player, "Log in Zwischenablage: " + latestLog);
-                LoggerModule.Info(MOD, MODULE, "Log kopiert von: " + player.DisplayName);
-                return;
-            }
+            string sub = args.Length > 0 ? args[0].ToLower() : "show";
 
             if (sub == "show")
             {
-                string[] logLines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                int start = Math.Max(0, logLines.Length - PAGE_SIZE);
-                Send(player, "=== Log (letzte " + (logLines.Length - start) + " Zeilen) ===");
-                for (int i = start; i < logLines.Length; i++)
-                    Send(player, logLines[i]);
+                string content = _fileManager.ReadCurrentLog();
+                if (content == null) { Send(player, "Keine Log-Datei gefunden."); return; }
+                var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                int start = Math.Max(0, lines.Length - PAGE_SIZE);
+                Send(player, "=== Log (" + _fileManager.GetCurrentLogFile() + ") ===");
+                for (int i = start; i < lines.Length; i++)
+                    Send(player, lines[i]);
                 return;
             }
 
-            Send(player, "Unbekannt: " + sub + " — erlaubt: copy, show");
+            if (sub == "copy")
+            {
+                string content = _fileManager.ReadCurrentLog();
+                if (content == null) { Send(player, "Keine Log-Datei gefunden."); return; }
+                VRage.Utils.MyClipboardHelper.SetClipboard(content);
+                Send(player, "Log in Zwischenablage: " + _fileManager.GetCurrentLogFile());
+                return;
+            }
+
+            Send(player, "Verwendung: !pbc log show | !pbc log copy");
         }
 
         private void ExecuteModCommand(IMyPlayer player, string modName, string commandName, string[] args)
         {
-            string argsStr = args != null && args.Length > 0 ? string.Join(" ", args) : "";
-            string fullCmd = modName + " " + commandName + (argsStr.Length > 0 ? " " + argsStr : "");
-
-            LoggerModule.Trace(MOD, MODULE, $"ExecuteModCommand: '{player.DisplayName}' (SteamId: {player.SteamUserId}) — {fullCmd}");
-
             CommandInfo cmd = null;
             foreach (var c in _modCommands[modName])
                 if (c.Name == commandName) { cmd = c; break; }
 
             if (cmd == null)
             {
-                LoggerModule.Debug(MOD, MODULE, $"Command nicht gefunden: {modName} {commandName} — von '{player.DisplayName}'");
                 Send(player, "Command nicht gefunden: " + commandName + " — tippe " + PREFIX + " " + modName + " help");
                 return;
             }
@@ -937,16 +869,60 @@ namespace PhantombiteCore.Modules
             if (cmd.AdminOnly && !IsAdmin(player))
             {
                 Send(player, "Blockiert: Admin-Rechte erforderlich.");
-                LoggerModule.Warn(MOD, MODULE, $"Admin-Blockierung: '{player.DisplayName}' (SteamId: {player.SteamUserId}) versuchte: {fullCmd}");
                 return;
             }
 
-            LoggerModule.Debug(MOD, MODULE, $"'{player.DisplayName}' (SteamId: {player.SteamUserId}) führt aus: {fullCmd}");
-            LoggerModule.Trace(MOD, MODULE, $"Admin-Check: PromoteLevel={player.PromoteLevel}, AdminOnly={cmd.AdminOnly} → erlaubt");
             cmd.Handler(player, args);
         }
 
-        // ── Seiten-System ─────────────────────────────────────────────────────
+        private void SendCommandToMod(IMyPlayer player, long channel, string commandName, string[] args)
+        {
+            try
+            {
+                string argsJoined = args != null && args.Length > 0 ? string.Join("|", args) : "";
+                string modName    = _modChannels.ContainsKey(channel) ? _modChannels[channel] : channel.ToString();
+                string key        = modName + "|" + commandName + "|" + argsJoined + "|" + player.SteamUserId;
+
+                if (_pendingCommands.ContainsKey(key))
+                {
+                    ShowHud(modName + " " + commandName + ": bereits in Bearbeitung", false);
+                    return;
+                }
+
+                string msg = "CMD|" + commandName;
+                if (!string.IsNullOrEmpty(argsJoined)) msg += "|" + argsJoined;
+                msg += "|STEAM:" + player.SteamUserId;
+
+                _pendingCommands[key] = new PendingCommand { SteamId = player.SteamUserId, SentAt = DateTime.UtcNow };
+
+                if (_modDetector != null && !_modDetector.IsSingleplayer)
+                {
+                    string packet    = channel + "|" + msg;
+                    byte[] packetData = Encoding.UTF8.GetBytes(packet);
+                    MyAPIGateway.Multiplayer.SendMessageToServer(CMD_TO_SERVER_PACKET, packetData);
+                }
+                else
+                {
+                    MyAPIGateway.Utilities.SendModMessage(channel, msg);
+                }
+            }
+            catch (Exception ex)
+            {
+                PBLog.Error(MOD, MODULE, "Fehler in SendCommandToMod", ex);
+            }
+        }
+
+        // ── UI Helfer ────────────────────────────────────────────────────────
+
+        private void ShowHud(string message, bool success)
+        {
+            try
+            {
+                var font = success ? MyFontEnum.Green : MyFontEnum.Red;
+                MyAPIGateway.Utilities.ShowNotification("[PB] " + message, 3000, font);
+            }
+            catch { }
+        }
 
         private void ShowPage(IMyPlayer player, List<string> lines, string baseCommand, string[] args, string title = "")
         {
@@ -958,7 +934,6 @@ namespace PhantombiteCore.Modules
             if (totalPages < 1) totalPages = 1;
             if (page > totalPages) page = totalPages;
 
-            // Header mit Seitenzahl
             if (!string.IsNullOrEmpty(title))
             {
                 string pageStr = totalPages > 1 ? " (" + page + "/" + totalPages + ")" : "";
@@ -972,8 +947,6 @@ namespace PhantombiteCore.Modules
                 Send(player, lines[i]);
         }
 
-        // ── Helpers ───────────────────────────────────────────────────────────
-
         public bool IsAdmin(IMyPlayer player)
         {
             if (player == null) return false;
@@ -986,8 +959,10 @@ namespace PhantombiteCore.Modules
         {
             if (player == null || MyAPIGateway.Utilities == null) return;
             try { MyAPIGateway.Utilities.ShowMessage("[PB-Core]", message); }
-            catch (Exception ex) { LoggerModule.Error(MOD, MODULE, "Fehler beim Senden", ex); }
+            catch (Exception ex) { PBLog.Error(MOD, MODULE, "Fehler beim Senden", ex); }
         }
+
+        // ── Interne Helfer ───────────────────────────────────────────────────
 
         private string[] SubArgs(string[] tokens, int from)
         {

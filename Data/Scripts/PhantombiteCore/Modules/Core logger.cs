@@ -1,46 +1,133 @@
 using System;
 using System.Collections.Generic;
 using VRage.Utils;
-using PhantombiteCore.Core;
 
 namespace PhantombiteCore.Modules
 {
     /// <summary>
-    /// Core_Logger - Zentraler Logger für alle PhantomBite Mods.
+    /// PBLog — Zentraler Logger für alle PhantomBite Mods.
     ///
-    /// Log-Stufen pro Mod:
-    ///   Normal — nur WARN + ERROR
-    ///   Debug  — + INFO + DEBUG
-    ///   Trace  — + jeden einzelnen Schritt
+    /// Debug-Level pro Mod (gesetzt via GlobalConfig oder !pbc debug):
+    ///   0 — Nur wichtige Infos, immer sichtbar (Standard)
+    ///   1 — Wichtigste Debug-Infos
+    ///   2 — Detaillierte Debug-Infos (nicht für jeden Mod nötig)
     ///
-    /// Alle Mods schreiben in diesen Logger.
-    /// Core_FileManager liest den Buffer und schreibt ihn in die Log-Datei.
-    ///
-    /// Format: 2026-03-26 18:05:12.123 [INFO ] Economy/FileManager : Nachricht
+    /// Log-Format:
+    ///   [PB.Economy] FileManager: Preisliste geladen
+    ///   [PB.Economy][1] FileManager: Item Iron Ore aufgelöst
+    ///   [PB.Economy][2] FileManager: Slot 12 geprüft
     /// </summary>
-    public class LoggerModule : IModule
+    public static class PBLog
+    {
+        private const string MOD_PREFIX = "Phantombite_";
+        private static readonly Dictionary<string, int> _levels = new Dictionary<string, int>();
+        private static readonly List<string> _fileBuffer = new List<string>();
+
+        // ── Level Management ─────────────────────────────────────────────────
+
+        public static void SetLevel(string mod, int level)
+        {
+            if (level < 0) level = 0;
+            if (level > 2) level = 2;
+            _levels[mod] = level;
+            Write("Core", "PBLog", "Debug-Level: " + Short(mod) + " = " + level, 0);
+        }
+
+        public static int GetLevel(string mod)
+        {
+            int level;
+            return _levels.TryGetValue(mod, out level) ? level : 0;
+        }
+
+        // ── Public API ───────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Schreibt eine Log-Zeile.
+        /// level 0 = immer sichtbar (Standard)
+        /// level 1 = nur wenn Debug-Level >= 1
+        /// level 2 = nur wenn Debug-Level >= 2
+        /// </summary>
+        public static void Log(string mod, string module, string message, int level = 0)
+        {
+            if (level > 0 && GetLevel(mod) < level) return;
+            Write(mod, module, message, level);
+        }
+
+        /// <summary>Warnung — immer sichtbar, mit [WARN] Tag.</summary>
+        public static void Warn(string mod, string module, string message)
+        {
+            Write(mod, module, "[WARN] " + message, 0);
+        }
+
+        /// <summary>Fehler — immer sichtbar, mit [ERROR] Tag. Exception optional.</summary>
+        public static void Error(string mod, string module, string message, Exception ex = null)
+        {
+            string full = ex != null ? message + "\n" + ex : message;
+            Write(mod, module, "[ERROR] " + full, 0);
+        }
+
+        // ── Intern ───────────────────────────────────────────────────────────
+
+        private static void Write(string mod, string module, string message, int level)
+        {
+            try
+            {
+                string tag  = level > 0 ? "[" + level + "]" : "";
+                string line = "[PB." + Short(mod) + "]" + tag + " " + module + ": " + message;
+                MyLog.Default.WriteLineAndConsole(line);
+
+                // Level 0 + WARN + ERROR → Log-Datei Buffer
+                // Level 1/2 → nur SE-Log, kein Datei-Spam
+                if (level == 0)
+                {
+                    string ts = DateTime.Now.ToString("HH:mm:ss");
+                    _fileBuffer.Add(ts + "  " + line);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Gibt den aktuellen Buffer zurück und leert ihn.
+        /// Wird von FileManager periodisch aufgerufen.
+        /// </summary>
+        public static List<string> TakeLogBuffer()
+        {
+            if (_fileBuffer.Count == 0) return null;
+            var copy = new List<string>(_fileBuffer);
+            _fileBuffer.Clear();
+            return copy;
+        }
+
+        /// <summary>Schätzt die aktuelle Buffer-Größe in Bytes (UTF-16).</summary>
+        public static long GetBufferSizeEstimate()
+        {
+            long size = 0;
+            foreach (var line in _fileBuffer)
+                size += line.Length * 2;
+            return size;
+        }
+
+        internal static string Short(string mod)
+        {
+            if (string.IsNullOrEmpty(mod)) return "?";
+            return mod.StartsWith(MOD_PREFIX) ? mod.Substring(MOD_PREFIX.Length) : mod;
+        }
+    }
+
+    // ── IModule-Wrapper ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Dünner IModule-Wrapper für PBLog — meldet Init/Close im ModuleManager.
+    /// PBLog selbst ist statisch und braucht keine echte Initialisierung.
+    /// </summary>
+    public class LoggerModule : Core.IModule
     {
         public string ModuleName { get { return "Core_Logger"; } }
 
-        public enum LogLevel
-        {
-            Normal = 0,
-            Debug  = 1,
-            Trace  = 2
-        }
-
-        private static readonly Dictionary<string, LogLevel> _levels     = new Dictionary<string, LogLevel>();
-        private static readonly List<string>                 _buffer     = new List<string>();
-        private static bool                                  _initialized = false;
-
-        private const int MAX_BUFFER = 2000;
-
-        // ── IModule ──────────────────────────────────────────────────────────
-
         public void Init()
         {
-            _initialized = true;
-            Info("Core", "Core_Logger", "Logger initialized");
+            PBLog.Log("Core", "Logger", "Initialisiert");
         }
 
         public void Update()   { }
@@ -48,89 +135,7 @@ namespace PhantombiteCore.Modules
 
         public void Close()
         {
-            Info("Core", "Core_Logger", "Logger closing");
-            _initialized = false;
-        }
-
-        // ── Stufe setzen ─────────────────────────────────────────────────────
-
-        public static void SetLevel(string mod, LogLevel level)
-        {
-            _levels[mod] = level;
-            Write("INFO ", mod, "Core_Logger", "Log-Stufe gesetzt: " + level);
-        }
-
-        public static LogLevel GetLevel(string mod)
-        {
-            LogLevel level;
-            return _levels.TryGetValue(mod, out level) ? level : LogLevel.Normal;
-        }
-
-        // ── Public API ───────────────────────────────────────────────────────
-
-        /// <summary>WARN - Immer sichtbar.</summary>
-        public static void Warn(string mod, string module, string message)
-        {
-            Write("WARN ", mod, module, message);
-        }
-
-        /// <summary>ERROR - Immer sichtbar. Exception optional.</summary>
-        public static void Error(string mod, string module, string message, Exception ex = null)
-        {
-            Write("ERROR", mod, module, ex != null ? message + "\n" + ex : message);
-        }
-
-        /// <summary>INFO - Ab Debug-Stufe sichtbar.</summary>
-        public static void Info(string mod, string module, string message)
-        {
-            if (GetLevel(mod) < LogLevel.Debug) return;
-            Write("INFO ", mod, module, message);
-        }
-
-        /// <summary>DEBUG - Ab Debug-Stufe sichtbar.</summary>
-        public static void Debug(string mod, string module, string message)
-        {
-            if (GetLevel(mod) < LogLevel.Debug) return;
-            Write("DEBUG", mod, module, message);
-        }
-
-        /// <summary>TRACE - Nur bei Trace-Stufe sichtbar.</summary>
-        public static void Trace(string mod, string module, string message)
-        {
-            if (GetLevel(mod) < LogLevel.Trace) return;
-            Write("TRACE", mod, module, message);
-        }
-
-        // ── Buffer API für Core_FileManager ───────────────────────────────────────────────
-
-        /// <summary>Gibt den Buffer zurück und leert ihn. Wird von Core_FileManager aufgerufen.</summary>
-        public static List<string> FlushBuffer()
-        {
-            if (_buffer.Count == 0) return null;
-            var copy = new List<string>(_buffer);
-            _buffer.Clear();
-            return copy;
-        }
-
-        // ── Interner Writer ──────────────────────────────────────────────────
-
-        private static void Write(string level, string mod, string module, string message)
-        {
-            try
-            {
-                string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-                string line = timestamp + " [" + level + "] " + mod + "/" + module + " : " + message;
-
-                // Immer in SE Log
-                MyLog.Default.WriteLineAndConsole(line);
-
-                // In Buffer für Core_FileManager
-                if (_buffer.Count < MAX_BUFFER)
-                    _buffer.Add(line);
-                else if (_buffer.Count == MAX_BUFFER)
-                    _buffer.Add(timestamp + " [WARN ] Core/Core_Logger : Buffer voll! (" + MAX_BUFFER + " Eintraege)");
-            }
-            catch { }
+            PBLog.Log("Core", "Logger", "Beendet");
         }
     }
 }

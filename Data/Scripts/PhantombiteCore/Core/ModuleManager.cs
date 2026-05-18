@@ -1,48 +1,50 @@
 using System;
 using System.Collections.Generic;
-using Sandbox.ModAPI;
-using VRage.Utils;
+using PhantombiteCore.Modules;
 
 namespace PhantombiteCore.Core
 {
     /// <summary>
-    /// Manages all PhantombiteCore modules with error isolation
+    /// ModuleManager — Verwaltet alle PhantombiteCore Module mit Fehler-Isolation.
+    ///
+    /// Ein Modul wird nach MAX_CRASHES Abstürzen deaktiviert und nie wieder aufgerufen.
     /// </summary>
     public class ModuleManager
     {
-        private readonly List<IModule> _modules = new List<IModule>();
-        private readonly Dictionary<string, int> _crashCounters = new Dictionary<string, int>();
-        private readonly Dictionary<string, bool> _disabledModules = new Dictionary<string, bool>();
+        private const string MOD = "Phantombite_Core";
+        private const string MDL = "ModuleManager";
         private const int MAX_CRASHES = 3;
+
+        private readonly List<IModule>               _modules         = new List<IModule>();
+        private readonly Dictionary<string, int>     _crashCounters   = new Dictionary<string, int>();
+        private readonly Dictionary<string, bool>    _disabledModules = new Dictionary<string, bool>();
 
         public void RegisterModule(IModule module)
         {
             if (module == null)
             {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: Cannot register null module");
+                PBLog.Warn(MOD, MDL, "RegisterModule: null übergeben — übersprungen");
                 return;
             }
-
             _modules.Add(module);
-            _crashCounters[module.ModuleName] = 0;
+            _crashCounters[module.ModuleName]   = 0;
             _disabledModules[module.ModuleName] = false;
-            MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: Registered '" + module.ModuleName + "'");
+            PBLog.Log(MOD, MDL, "Modul registriert: " + module.ModuleName, 1);
         }
 
         public void InitAll()
         {
-            MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: Initializing " + _modules.Count + " modules...");
+            PBLog.Log(MOD, MDL, "Init — " + _modules.Count + " Module: Logger, FileManager, Command, Performance, PlayerTracker");
 
             foreach (var module in _modules)
             {
                 if (_disabledModules[module.ModuleName]) continue;
-
                 try
                 {
-                    var startTime = DateTime.UtcNow;
+                    var start   = DateTime.UtcNow;
                     module.Init();
-                    var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
-                    MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: '" + module.ModuleName + "' initialized in " + elapsed.ToString("F2") + "ms");
+                    double ms   = (DateTime.UtcNow - start).TotalMilliseconds;
+                    PBLog.Log(MOD, MDL, module.ModuleName + " — OK (" + ms.ToString("F0") + "ms)");
                 }
                 catch (Exception ex)
                 {
@@ -56,15 +58,8 @@ namespace PhantombiteCore.Core
             foreach (var module in _modules)
             {
                 if (_disabledModules[module.ModuleName]) continue;
-
-                try
-                {
-                    module.Update();
-                }
-                catch (Exception ex)
-                {
-                    HandleModuleError(module, "Update", ex);
-                }
+                try   { module.Update(); }
+                catch (Exception ex) { HandleModuleError(module, "Update", ex); }
             }
         }
 
@@ -73,32 +68,20 @@ namespace PhantombiteCore.Core
             foreach (var module in _modules)
             {
                 if (_disabledModules[module.ModuleName]) continue;
-
-                try
-                {
-                    module.SaveData();
-                }
-                catch (Exception ex)
-                {
-                    HandleModuleError(module, "SaveData", ex);
-                }
+                try   { module.SaveData(); }
+                catch (Exception ex) { HandleModuleError(module, "SaveData", ex); }
             }
         }
 
         public void CloseAll()
         {
-            MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: Closing " + _modules.Count + " modules...");
-
+            PBLog.Log(MOD, MDL, "Close — " + _modules.Count + " Module");
             foreach (var module in _modules)
             {
-                try
-                {
-                    module.Close();
-                    MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: '" + module.ModuleName + "' closed");
-                }
+                try   { module.Close(); }
                 catch (Exception ex)
                 {
-                    MyLog.Default.WriteLineAndConsole("[PhantombiteCore] ModuleManager: Error closing '" + module.ModuleName + "': " + ex.Message);
+                    PBLog.Error(MOD, MDL, "Fehler beim Schließen von '" + module.ModuleName + "'", ex);
                 }
             }
         }
@@ -106,31 +89,17 @@ namespace PhantombiteCore.Core
         private void HandleModuleError(IModule module, string operation, Exception ex)
         {
             _crashCounters[module.ModuleName]++;
+            int count = _crashCounters[module.ModuleName];
 
-            MyLog.Default.WriteLineAndConsole(
-                "[PhantombiteCore] ModuleManager ERROR: '" + module.ModuleName + "' crashed in " + operation +
-                " (Count: " + _crashCounters[module.ModuleName] + "/" + MAX_CRASHES + ")\n" + ex
-            );
+            PBLog.Error(MOD, MDL,
+                module.ModuleName + " Fehler in " + operation +
+                " (" + count + "/" + MAX_CRASHES + ")", ex);
 
-            if (_crashCounters[module.ModuleName] >= MAX_CRASHES)
+            if (count >= MAX_CRASHES)
             {
                 _disabledModules[module.ModuleName] = true;
-                MyLog.Default.WriteLineAndConsole(
-                    "[PhantombiteCore] ModuleManager: '" + module.ModuleName + "' DISABLED after " + MAX_CRASHES + " crashes!"
-                );
+                PBLog.Warn(MOD, MDL, module.ModuleName + " DEAKTIVIERT nach " + MAX_CRASHES + " Abstürzen!");
             }
-        }
-
-        public string GetStatus()
-        {
-            var status = "[PhantombiteCore] ModuleManager Status:\n";
-            foreach (var module in _modules)
-            {
-                var state = _disabledModules[module.ModuleName] ? "DISABLED" : "ACTIVE";
-                var crashes = _crashCounters[module.ModuleName];
-                status += "  - " + module.ModuleName + ": " + state + " (Crashes: " + crashes + ")\n";
-            }
-            return status;
         }
     }
 }

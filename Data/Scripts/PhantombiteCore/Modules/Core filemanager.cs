@@ -2,29 +2,23 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Sandbox.ModAPI;
-using VRage.Utils;
 using PhantombiteCore.Core;
+using PhantombiteCore.Modules;
 
 namespace PhantombiteCore.Modules
 {
     /// <summary>
     /// Core_FileManager
     ///
-    /// Drei Aufgaben:
+    /// Zwei Aufgaben:
     ///
     /// 1. GLOBAL CONFIG
-    ///    - Phantombite_GlobalConfig.ini — Debug-Level pro Mod
+    ///    - Phantombite_GlobalConfig.ini — Debug-Level (0/1/2) pro Mod
     ///    - Self-Healing: Datei wird erstellt wenn nicht vorhanden
-    ///    - Debug-Level wird nach dem Laden an Core_Logger weitergegeben
+    ///    - Debug-Level wird nach dem Laden an PBLog weitergegeben
     ///    - Nur auf Server (Singleplayer + Dedicated Server)
     ///
-    /// 2. CORE LOG MANAGEMENT
-    ///    - Pro Spielstart eine neue Log-Datei: Phantombite_Core_DATUM_UHRZEIT.log
-    ///    - Maximal 20 Log-Dateien, älteste wird gelöscht
-    ///    - Schreibt Core_Logger-Buffer alle 5 Sekunden in die Log-Datei
-    ///    - Nur auf Server
-    ///
-    /// 3. HELFER-API FÜR ANDERE MODS
+    /// 2. HELFER-API FÜR ANDERE MODS
     ///    - Andere Mods übergeben ihren eigenen Typ als Namespace
     ///    - Dateien landen im Ordner des jeweiligen Mods
     ///    - ReadFile, WriteFile, FileExists, DeleteFile
@@ -34,22 +28,36 @@ namespace PhantombiteCore.Modules
     {
         public string ModuleName { get { return "Core_FileManager"; } }
 
-        // ── Dateinamen ───────────────────────────────────────────────────────
-        private const string GLOBAL_CONFIG_FILE = "Phantombite_GlobalConfig.ini";
-        private const string LOG_INDEX_FILE     = "Phantombite_LogIndex.txt";
-        private const string LOG_PREFIX         = "Phantombite_Core_";
-        private const string LOG_EXTENSION      = ".log";
-        private const int    MAX_LOGS           = 20;
+        private const string MOD            = "Core";
+        private const string MODULE         = "Core_FileManager";
+        private const string GLOBAL_CONFIG  = "Phantombite_GlobalConfig.ini";
+        private const string LOG_INDEX      = "Phantombite_LogIndex.txt";
+        private const string LOG_PREFIX     = "Phantombite_";
+        private const string LOG_EXT        = ".log";
+        private const int    MAX_LOGS       = 10;
+        private const int    FLUSH_INTERVAL = 300; // alle 300 Ticks (~5 Sek) flushen
 
-        // Update10 = alle 10 Ticks, 60 Ticks = 1s → alle 30 Aufrufe = 5s
-        private const int WRITE_INTERVAL = 30;
-        private int _writeCounter = 0;
-
-        private string       _currentLogFile = null;
-        private List<string> _logIndex       = new List<string>();
-        private bool         _isServer       = false;
-
+        private bool   _isServer        = false;
+        private string _currentLogFile  = null;
         private ModDetector _modDetector;
+        private Dictionary<string, string> _parsedConfig = null;
+
+        // ── Adaptives Flush-System ────────────────────────────────────────────
+        private DateTime _lastFlush          = DateTime.MinValue;
+        private int      _flushIntervalSec   = 60;   // Start: 1 Minute
+        private const int FLUSH_MIN_SEC      = 60;   // Minimum: 1 Min
+        private const int FLUSH_MAX_SEC      = 300;  // Maximum: 5 Min (Fallback)
+        private const float SIM_FLUSH_THRESH = 0.90f; // SimSpeed unter dem wir nicht flushen
+        private readonly System.Diagnostics.Stopwatch _flushWatch = new System.Diagnostics.Stopwatch();
+
+        public Dictionary<string, string> GetParsedConfig() { return _parsedConfig; }
+
+        // Statischer Zugriff für PerformanceModule (läuft nach FileManager.Init())
+        private static FileManagerModule _instance;
+        public static Dictionary<string, string> GetCachedConfig()
+        {
+            return _instance != null ? _instance._parsedConfig : null;
+        }
 
         // ── ModDetector setzen ───────────────────────────────────────────────
 
@@ -63,40 +71,98 @@ namespace PhantombiteCore.Modules
         public void Init()
         {
             _isServer = _modDetector != null ? _modDetector.IsServer : MyAPIGateway.Multiplayer.IsServer;
-
             if (!_isServer) return;
 
-            // Alles nur auf Server (Singleplayer + Dedicated Server)
+            _instance = this;
             LoadGlobalConfig();
-            LoadLogIndex();
-            CreateNewLogFile();
-            CleanOldLogs();
-
-            LoggerModule.Info("Core", "Core_FileManager", "Initialized — Log: " + _currentLogFile);
+            CreateLogFile();
+            PBLog.Log(MOD, MODULE, "Initialisiert");
         }
 
         public void Update()
         {
             if (!_isServer || _currentLogFile == null) return;
 
-            _writeCounter++;
-            if (_writeCounter < WRITE_INTERVAL) return;
-            _writeCounter = 0;
+            // RAM-Limit: 50MB hardcoded — Notfall-Flush unabhängig von SimSpeed
+            const long MAX_BUFFER_BYTES = 50L * 1024L * 1024L;
+            if (PBLog.GetBufferSizeEstimate() >= MAX_BUFFER_BYTES)
+            {
+                PBLog.Log(MOD, MODULE, "Log-Buffer 50MB Limit erreicht — Notfall-Flush");
+                FlushBuffer();
+                _lastFlush = DateTime.UtcNow;
+                return;
+            }
 
-            WriteBufferToFile();
+            double elapsed = (DateTime.UtcNow - _lastFlush).TotalSeconds;
+
+            // Fallback: nach FLUSH_MAX_SEC immer flushen egal was
+            bool fallback = elapsed >= FLUSH_MAX_SEC;
+
+            // Normal: SimSpeed gut genug + Intervall abgelaufen
+            bool simOk  = PerformanceModule.CurrentSimSpeed >= SIM_FLUSH_THRESH;
+            bool timeOk = elapsed >= _flushIntervalSec;
+
+            if (!fallback && (!simOk || !timeOk)) return;
+
+            // Flush mit Zeitmessung
+            _flushWatch.Restart();
+            FlushBuffer();
+            _flushWatch.Stop();
+
+            long writeMs = _flushWatch.ElapsedMilliseconds;
+            _lastFlush   = DateTime.UtcNow;
+
+            // Intervall dynamisch anpassen
+            AdjustFlushInterval(writeMs, simOk);
         }
 
-        public void SaveData()
+        private void AdjustFlushInterval(long writeMs, bool simWasOk)
         {
-            if (!_isServer || _currentLogFile == null) return;
-            WriteBufferToFile();
+            int newInterval;
+
+            if (writeMs < 5)
+            {
+                // Sehr schnell → Minimum
+                newInterval = FLUSH_MIN_SEC;
+            }
+            else if (writeMs < 15)
+            {
+                // Normal → 2 Minuten
+                newInterval = 120;
+            }
+            else if (writeMs < 40)
+            {
+                // Langsam → 3 Minuten
+                newInterval = 180;
+                PBLog.Log(MOD, MODULE, "Log flush langsam: " + writeMs + "ms — Intervall auf 3min", 1);
+            }
+            else
+            {
+                // Sehr langsam → Maximum + Warnung
+                newInterval = FLUSH_MAX_SEC;
+                PBLog.Warn(MOD, MODULE, "Log flush sehr langsam: " + writeMs + "ms — Intervall auf 5min");
+            }
+
+            // Falls wir wegen Fallback geflusht haben obwohl SimSpeed schlecht war
+            if (!simWasOk)
+            {
+                newInterval = FLUSH_MAX_SEC;
+                PBLog.Log(MOD, MODULE, "Log flush unter Last (Fallback) — " + writeMs + "ms", 1);
+            }
+
+            if (newInterval != _flushIntervalSec)
+            {
+                PBLog.Log(MOD, MODULE, "Flush-Intervall: " + _flushIntervalSec + "s → " + newInterval + "s", 1);
+                _flushIntervalSec = newInterval;
+            }
         }
+
+        public void SaveData() { FlushBuffer(); }
 
         public void Close()
         {
-            if (!_isServer || _currentLogFile == null) return;
-            WriteBufferToFile();
-            AppendToLog("--- Session End ---");
+            PBLog.Log(MOD, MODULE, "Session beendet");
+            FlushBuffer();
         }
 
         // ── Global Config ────────────────────────────────────────────────────
@@ -105,42 +171,54 @@ namespace PhantombiteCore.Modules
         {
             try
             {
-                if (!CoreFileExists(GLOBAL_CONFIG_FILE))
+                if (!CoreFileExists(GLOBAL_CONFIG))
                 {
                     DeployGlobalConfig();
-                    MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: GlobalConfig erstellt");
+                    PBLog.Log(MOD, MODULE, "GlobalConfig neu erstellt");
                 }
 
-                string content = CoreReadFile(GLOBAL_CONFIG_FILE);
+                string content = CoreReadFile(GLOBAL_CONFIG);
                 if (content == null) return;
 
                 var config = ParseINI(content);
+                _parsedConfig = config;
 
-                ApplyDebugLevel(config, "Phantombite_Core");
-                ApplyDebugLevel(config, "Phantombite_Artefact");
-                ApplyDebugLevel(config, "Phantombite_CableWinch");
-                ApplyDebugLevel(config, "Phantombite_Creatures");
-                ApplyDebugLevel(config, "Phantombite_Economy");
-                ApplyDebugLevel(config, "Phantombite_Encounter");
-                ApplyDebugLevel(config, "Phantombite_Server_Addon");
-                ApplyDebugLevel(config, "Phantombite_Sulvax");
-                ApplyDebugLevel(config, "Phantombite_SulvaxRespawnRover");
+                // Kern immer setzen
+                ApplyDebugLevel(config, ModRegistry.LocalCore, true);
 
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: GlobalConfig geladen");
+                // Alle anderen nur wenn aktiv
+                ApplyDebugLevel(config, ModRegistry.LocalAdminProjektor, _modDetector.IsActive(ModRegistry.AdminProjektor));
+                ApplyDebugLevel(config, ModRegistry.LocalArtefact,       _modDetector.IsActive(ModRegistry.Artefact));
+                ApplyDebugLevel(config, ModRegistry.LocalAutoTransfer,   _modDetector.IsActive(ModRegistry.AutoTransfer));
+                ApplyDebugLevel(config, ModRegistry.LocalCableWinch,     _modDetector.IsActive(ModRegistry.CableWinch));
+                ApplyDebugLevel(config, ModRegistry.LocalCreatures,      _modDetector.IsActive(ModRegistry.Creatures));
+                ApplyDebugLevel(config, ModRegistry.LocalEconomy,        _modDetector.IsActive(ModRegistry.Economy));
+                ApplyDebugLevel(config, ModRegistry.LocalEncounter,      _modDetector.IsActive(ModRegistry.Encounter));
+                ApplyDebugLevel(config, ModRegistry.LocalMining,         _modDetector.IsActive(ModRegistry.Mining));
+                ApplyDebugLevel(config, ModRegistry.LocalPlanetSpawner,  _modDetector.IsActive(ModRegistry.PlanetSpawner));
+                ApplyDebugLevel(config, ModRegistry.LocalServerAddon,    _modDetector.IsActive(ModRegistry.ServerAddon));
+                ApplyDebugLevel(config, ModRegistry.LocalStationRefill,  _modDetector.IsActive(ModRegistry.StationRefill));
+                ApplyDebugLevel(config, ModRegistry.LocalSulvax,         _modDetector.IsActive(ModRegistry.Sulvax));
+                ApplyDebugLevel(config, ModRegistry.LocalSulvaxRespawnRover, _modDetector.IsActive(ModRegistry.SulvaxRespawnRover));
+                ApplyDebugLevel(config, ModRegistry.LocalWaterElectrolyzer,  _modDetector.IsActive(ModRegistry.WaterElectrolyzer));
+
+                PBLog.Log(MOD, MODULE, "GlobalConfig geladen");
             }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Laden der GlobalConfig: " + ex.Message);
+                PBLog.Error(MOD, MODULE, "Fehler beim Laden der GlobalConfig", ex);
             }
         }
 
-        private void ApplyDebugLevel(Dictionary<string, string> config, string modName)
+        private void ApplyDebugLevel(Dictionary<string, string> config, string modName, bool active)
         {
-            string value = GetValue(config, "Debug", modName, "Normal");
-            LoggerModule.LogLevel level = LoggerModule.LogLevel.Normal;
-            if (value == "Debug") level = LoggerModule.LogLevel.Debug;
-            else if (value == "Trace") level = LoggerModule.LogLevel.Trace;
-            LoggerModule.SetLevel(modName, level);
+            if (!active) return;
+            string value = GetValue(config, "Debug", modName, "0");
+            int level;
+            if (!int.TryParse(value, out level)) level = 0;
+            if (level < 0) level = 0;
+            if (level > 2) level = 2;
+            PBLog.SetLevel(modName, level);
         }
 
         private void DeployGlobalConfig()
@@ -149,142 +227,181 @@ namespace PhantombiteCore.Modules
             sb.AppendLine("# ==============================================================================");
             sb.AppendLine("# GLOBAL CONFIG - PhantomBite Core");
             sb.AppendLine("# ==============================================================================");
-            sb.AppendLine("# Debug-Level pro Mod: Normal, Debug, Trace");
-            sb.AppendLine("#   Normal — nur WARN + ERROR");
-            sb.AppendLine("#   Debug  — + INFO + DEBUG");
-            sb.AppendLine("#   Trace  — + jeden einzelnen Schritt (sehr viel Output!)");
+            sb.AppendLine("# Debug-Level pro Mod:");
+            sb.AppendLine("#   0 — Nur wichtige Infos (Standard, immer sichtbar)");
+            sb.AppendLine("#   1 — Wichtigste Debug-Infos");
+            sb.AppendLine("#   2 — Detaillierte Debug-Infos (nicht für jeden Mod nötig)");
             sb.AppendLine("# ==============================================================================");
             sb.AppendLine();
             sb.AppendLine("[Debug]");
-            sb.AppendLine("Phantombite_Core=Normal");
-            sb.AppendLine("Phantombite_Artefact=Normal");
-            sb.AppendLine("Phantombite_CableWinch=Normal");
-            sb.AppendLine("Phantombite_Creatures=Normal");
-            sb.AppendLine("Phantombite_Economy=Normal");
-            sb.AppendLine("Phantombite_Encounter=Normal");
-            sb.AppendLine("Phantombite_Server_Addon=Normal");
-            sb.AppendLine("Phantombite_Sulvax=Normal");
-            sb.AppendLine("Phantombite_SulvaxRespawnRover=Normal");
+            sb.AppendLine("Phantombite_Core=0");
+            sb.AppendLine("Phantombite_AdminProjektor=0");
+            sb.AppendLine("Phantombite_Artefact=0");
+            sb.AppendLine("Phantombite_AutoTransfer=0");
+            sb.AppendLine("Phantombite_CableWinch=0");
+            sb.AppendLine("Phantombite_Creatures=0");
+            sb.AppendLine("Phantombite_Economy=0");
+            sb.AppendLine("Phantombite_Encounter=0");
+            sb.AppendLine("Phantombite_Mining=0");
+            sb.AppendLine("Phantombite_PlanetSpawner=0");
+            sb.AppendLine("Phantombite_Server_Addon=0");
+            sb.AppendLine("Phantombite_StationRefill=0");
+            sb.AppendLine("Phantombite_Sulvax=0");
+            sb.AppendLine("Phantombite_SulvaxRespawnRover=0");
+            sb.AppendLine("Phantombite_WaterElectrolyzer=0");
+            sb.AppendLine();
+            sb.AppendLine("# ==============================================================================");
+            sb.AppendLine("# PERFORMANCE SYSTEM");
+            sb.AppendLine("# ==============================================================================");
+            sb.AppendLine("# SampleInterval          — SimSpeed Prüfung alle N Ticks");
+            sb.AppendLine("# DropThreshold           — Unter diesem Wert = Drop erkannt (0.0-1.0)");
+            sb.AppendLine("# RecoveryThreshold       — Über diesem Wert = Erholt");
+            sb.AppendLine("# RecoveryTicks           — Ticks über Threshold bis Recovery bestätigt");
+            sb.AppendLine("# PersistentDropTicks     — Anhaltender Drop → alle Mods eskaliert");
+            sb.AppendLine("# CorrelationsBeforeEscalate — Wie oft Muster auftreten vor Eskalation");
+            sb.AppendLine("# UnknownSourcePerfLevel  — Perf Level bei unbekannter Ursache (temporär)");
+            sb.AppendLine("# StartupDelayTicks       — Ticks nach Start bis Messung beginnt (3600=1Min, 18000=5Min)");
+            sb.AppendLine("# ==============================================================================");
+            sb.AppendLine();
+            sb.AppendLine("[Performance]");
+            sb.AppendLine("SampleInterval=10");
+            sb.AppendLine("DropThreshold=0.85");
+            sb.AppendLine("RecoveryThreshold=0.95");
+            sb.AppendLine("StrikeDurationTicks=90");
+            sb.AppendLine("CorrelationsBeforeEscalate=3");
+            sb.AppendLine("HeavyTimeoutTicks=600");
+            sb.AppendLine("HeavyGraceWindowSec=12");
+            sb.AppendLine("StartupDelayTicks=3600");
+            sb.AppendLine();
+            sb.AppendLine("# CurrentLevel wird von Core automatisch verwaltet.");
+            sb.AppendLine("# Wird zurückgesetzt durch: !pbc perf reset ODER Mod-Update.");
+            sb.AppendLine("# Bekannte Muster (permanent) bleiben über Neustart erhalten.");
+            sb.AppendLine();
 
-            CoreWriteFile(GLOBAL_CONFIG_FILE, sb.ToString());
+            string[] perfMods = {
+                "Mining", "Economy", "AutoTransfer", "CableWinch", "Creatures",
+                "Encounter", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
+                "AdminProjektor", "StationRefill"
+            };
+            foreach (var mod in perfMods)
+            {
+                sb.AppendLine("[Performance." + mod + "]");
+                sb.AppendLine("EscalationPath=0,1,2,3");
+                sb.AppendLine("CorrelationsBeforeEscalate=3");
+                sb.AppendLine("CurrentLevel=0");
+                sb.AppendLine();
+            }
+
+            CoreWriteFile(GLOBAL_CONFIG, sb.ToString());
         }
 
-        // ── Log Verwaltung intern ────────────────────────────────────────────
+        // ── Log-Datei ────────────────────────────────────────────────────────
 
-        private void LoadLogIndex()
+        private void CreateLogFile()
         {
             try
             {
-                _logIndex.Clear();
-                string content = CoreReadFile(LOG_INDEX_FILE);
-                if (content == null) return;
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                _currentLogFile  = LOG_PREFIX + timestamp + LOG_EXT;
 
-                string[] lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var line in lines)
-                    if (!string.IsNullOrEmpty(line.Trim()))
-                        _logIndex.Add(line.Trim());
-            }
-            catch (Exception ex)
-            {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Laden des Log-Index: " + ex.Message);
-            }
-        }
-
-        private void SaveLogIndex()
-        {
-            try
-            {
-                var sb = new StringBuilder();
-                foreach (var entry in _logIndex)
-                    sb.AppendLine(entry);
-                CoreWriteFile(LOG_INDEX_FILE, sb.ToString());
-            }
-            catch (Exception ex)
-            {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Speichern des Log-Index: " + ex.Message);
-            }
-        }
-
-        private void CreateNewLogFile()
-        {
-            try
-            {
-                string timestamp    = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-                string sessionType  = _modDetector != null
-                    ? (_modDetector.IsSingleplayer ? "Singleplayer" : "Server")
-                    : "Unknown";
-
-                _currentLogFile = LOG_PREFIX + timestamp + LOG_EXTENSION;
-
-                AppendToLog("# ==============================================================================");
-                AppendToLog("# PhantomBite Core Log");
-                AppendToLog("# ==============================================================================");
-                AppendToLog("# Start   : " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                AppendToLog("# Session : " + sessionType);
-                AppendToLog("# Mode    : " + (_modDetector != null && _modDetector.IsDevMode ? "DEV" : "WORKSHOP"));
-                AppendToLog("# ==============================================================================");
-
-                _logIndex.Add(_currentLogFile);
-                SaveLogIndex();
-            }
-            catch (Exception ex)
-            {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Erstellen der Log-Datei: " + ex.Message);
-            }
-        }
-
-        private void CleanOldLogs()
-        {
-            try
-            {
-                while (_logIndex.Count > MAX_LOGS)
+                // Index laden, alten Log eintragen, alte löschen
+                var index = LoadLogIndex();
+                index.Add(_currentLogFile);
+                while (index.Count > MAX_LOGS)
                 {
-                    string oldest = _logIndex[0];
-                    _logIndex.RemoveAt(0);
-                    if (CoreFileExists(oldest)) CoreDeleteFile(oldest);
-                    MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Alter Log gelöscht: " + oldest);
+                    string old = index[0];
+                    index.RemoveAt(0);
+                    try { MyAPIGateway.Utilities.DeleteFileInWorldStorage(old, typeof(FileManagerModule)); }
+                    catch { }
                 }
-                SaveLogIndex();
+                SaveLogIndex(index);
+
+                // Erste Zeile schreiben
+                CoreAppendToLog("# Phantombite Core Log — " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                CoreAppendToLog("# ==========================================");
+                PBLog.Log(MOD, MODULE, "Log-Datei: " + _currentLogFile);
             }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Bereinigen alter Logs: " + ex.Message);
+                PBLog.Error(MOD, MODULE, "Fehler beim Erstellen der Log-Datei", ex);
             }
         }
 
-        private void WriteBufferToFile()
+        private void FlushBuffer()
         {
             try
             {
-                var entries = LoggerModule.FlushBuffer();
-                if (entries == null || entries.Count == 0) return;
-
+                var lines = PBLog.TakeLogBuffer();
+                if (lines == null || lines.Count == 0) return;
                 var sb = new StringBuilder();
-                foreach (var entry in entries)
-                    sb.AppendLine(entry);
-
-                AppendToLog(sb.ToString().TrimEnd());
+                foreach (var line in lines)
+                    sb.AppendLine(line);
+                CoreAppendToLog(sb.ToString().TrimEnd());
             }
-            catch (Exception ex)
-            {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Schreiben des Buffers: " + ex.Message);
-            }
+            catch { }
         }
 
-        private void AppendToLog(string content)
+        private void CoreAppendToLog(string content)
+        {
+            if (_currentLogFile == null) return;
+            try
+            {
+                string existing = "";
+                if (MyAPIGateway.Utilities.FileExistsInWorldStorage(_currentLogFile, typeof(FileManagerModule)))
+                {
+                    using (var r = MyAPIGateway.Utilities.ReadFileInWorldStorage(_currentLogFile, typeof(FileManagerModule)))
+                        existing = r.ReadToEnd();
+                }
+                using (var w = MyAPIGateway.Utilities.WriteFileInWorldStorage(_currentLogFile, typeof(FileManagerModule)))
+                    w.Write(existing + content + "\n");
+            }
+            catch { }
+        }
+
+        private List<string> LoadLogIndex()
+        {
+            var result = new List<string>();
+            try
+            {
+                if (!MyAPIGateway.Utilities.FileExistsInWorldStorage(LOG_INDEX, typeof(FileManagerModule)))
+                    return result;
+                using (var r = MyAPIGateway.Utilities.ReadFileInWorldStorage(LOG_INDEX, typeof(FileManagerModule)))
+                {
+                    string content = r.ReadToEnd();
+                    foreach (var line in content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                        result.Add(line.Trim());
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        private void SaveLogIndex(List<string> index)
         {
             try
             {
-                string existing = CoreReadFile(_currentLogFile) ?? "";
-                CoreWriteFile(_currentLogFile, existing + content + "\n");
+                var sb = new StringBuilder();
+                foreach (var entry in index)
+                    sb.AppendLine(entry);
+                using (var w = MyAPIGateway.Utilities.WriteFileInWorldStorage(LOG_INDEX, typeof(FileManagerModule)))
+                    w.Write(sb.ToString());
             }
-            catch (Exception ex)
-            {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Anhängen an Log: " + ex.Message);
-            }
+            catch { }
         }
 
-        // ── Core interne Datei-Operationen ───────────────────────────────────
+        // ── Public Log API für Command (!pbc log) ────────────────────────────
+
+        public string GetCurrentLogFile()         { return _currentLogFile; }
+        public static string GetCurrentLogFileName() { return _instance?._currentLogFile; }
+
+        public string ReadCurrentLog()
+        {
+            if (_currentLogFile == null) return null;
+            FlushBuffer(); // Erst flushen damit alles aktuell ist
+            return CoreReadFile(_currentLogFile);
+        }
+
+        public List<string> GetLogIndex()  { return LoadLogIndex(); }
 
         private string CoreReadFile(string filename)
         {
@@ -307,7 +424,7 @@ namespace PhantombiteCore.Modules
             }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Schreiben von '" + filename + "': " + ex.Message);
+                PBLog.Error(MOD, MODULE, "Fehler beim Schreiben von '" + filename + "'", ex);
             }
         }
 
@@ -315,15 +432,6 @@ namespace PhantombiteCore.Modules
         {
             try { return MyAPIGateway.Utilities.FileExistsInWorldStorage(filename, typeof(FileManagerModule)); }
             catch { return false; }
-        }
-
-        private void CoreDeleteFile(string filename)
-        {
-            try { MyAPIGateway.Utilities.DeleteFileInWorldStorage(filename, typeof(FileManagerModule)); }
-            catch (Exception ex)
-            {
-                MyLog.Default.WriteLineAndConsole("[PhantombiteCore] Core_FileManager: Fehler beim Löschen von '" + filename + "': " + ex.Message);
-            }
         }
 
         // ── Public Helfer-API für andere Mods ────────────────────────────────
@@ -340,7 +448,7 @@ namespace PhantombiteCore.Modules
             }
             catch (Exception ex)
             {
-                LoggerModule.Error("Core", "Core_FileManager", "Fehler beim Lesen von '" + filename + "'", ex);
+                PBLog.Error("Core", "Core_FileManager", "Fehler beim Lesen von '" + filename + "'", ex);
                 return null;
             }
         }
@@ -357,7 +465,7 @@ namespace PhantombiteCore.Modules
             }
             catch (Exception ex)
             {
-                LoggerModule.Error("Core", "Core_FileManager", "Fehler beim Schreiben von '" + filename + "'", ex);
+                PBLog.Error("Core", "Core_FileManager", "Fehler beim Schreiben von '" + filename + "'", ex);
                 return false;
             }
         }
@@ -384,7 +492,7 @@ namespace PhantombiteCore.Modules
             }
             catch (Exception ex)
             {
-                LoggerModule.Error("Core", "Core_FileManager", "Fehler beim Löschen von '" + filename + "'", ex);
+                PBLog.Error("Core", "Core_FileManager", "Fehler beim Löschen von '" + filename + "'", ex);
                 return false;
             }
         }
@@ -421,7 +529,7 @@ namespace PhantombiteCore.Modules
             }
             catch (Exception ex)
             {
-                LoggerModule.Error("Core", "Core_FileManager", "Fehler beim Parsen der INI", ex);
+                PBLog.Error("Core", "Core_FileManager", "Fehler beim Parsen der INI", ex);
             }
             return result;
         }

@@ -2,49 +2,55 @@ using System;
 using Sandbox.ModAPI;
 using VRage.Game;
 using VRage.Game.Components;
-using VRage.Utils;
 using PhantombiteCore.Core;
 using PhantombiteCore.Modules;
 
 namespace PhantombiteCore
 {
     /// <summary>
-    /// Main session component for PhantomBite Core.
+    /// PhantombiteCore Session — Einstiegspunkt.
     ///
-    /// Reihenfolge:
-    /// - Core_Logger        (immer, zuerst)
-    /// - Core_FileManager   (immer, nach Logger)
-    /// - Core_Command       (immer, nach FileManager)
-    /// - Core_StationRefill (nur wenn Phantombite_Economy aktiv)
-    /// - Core_PlanetSpawner (nur wenn Phantombite_Sulvax aktiv)
+    /// Modul-Reihenfolge (fest):
+    ///   1. Core_Logger       — PBLog initialisieren
+    ///   2. Core_FileManager  — GlobalConfig laden, Debug-Level setzen
+    ///   3. Core_Command      — Commands + Mod-Registrierung
+    ///
+    /// Ausgebaut:
+    ///   Core_PlanetSpawner → Phantombite_PlanetSpawner (eigener Mod)
+    ///   Core_StationRefill → Phantombite_StationRefill (eigener Mod)
     /// </summary>
     [MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
     public class PhantombiteCoreSession : MySessionComponentBase
     {
+        private const string VERSION  = "2.0.0";
+        private const string MOD      = "Phantombite_Core";
+        private const string MOD_NAME = "PhantombiteCore";
+
         private ModuleManager       _moduleManager;
         private ModDetector         _modDetector;
         private LoggerModule        _logger;
         private FileManagerModule   _fileManager;
         private CommandModule       _commandModule;
-        private StationRefillModule _stationRefill;
-        private PlanetSpawnerModule _planetSpawner;
+        private PerformanceModule   _performanceModule;
+        private PlayerTrackerModule _playerTracker;
 
         private bool _isInitialized = false;
-        private const string MOD_NAME = "PhantombiteCore";
 
         public override void LoadData()
         {
             try
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] Session LoadData started...");
+                // Noch kein PBLog (Logger läuft erst in BeforeStart) — MyLog direkt nutzen
+                VRage.Utils.MyLog.Default.WriteLineAndConsole(
+                    "[PB.Core] Phantombite Core v" + VERSION + " — LoadData");
                 _moduleManager = new ModuleManager();
                 _modDetector   = new ModDetector();
                 _isInitialized = true;
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] Session LoadData completed.");
             }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] CRITICAL ERROR in LoadData:\n" + ex);
+                VRage.Utils.MyLog.Default.WriteLineAndConsole(
+                    "[PB.Core] KRITISCHER FEHLER in LoadData:\n" + ex);
             }
         }
 
@@ -54,64 +60,43 @@ namespace PhantombiteCore
 
             try
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] BeforeStart - scanning active mods...");
-
                 _modDetector.Scan();
 
-                // Core_Logger
+                // ── Module registrieren und initialisieren ───────────────────
                 _logger = new LoggerModule();
                 _moduleManager.RegisterModule(_logger);
 
-                // Core_FileManager
                 _fileManager = new FileManagerModule();
                 _fileManager.SetModDetector(_modDetector);
                 _moduleManager.RegisterModule(_fileManager);
 
-                // Core_Command
                 _commandModule = new CommandModule();
                 _commandModule.SetModDetector(_modDetector);
                 _commandModule.SetFileManager(_fileManager);
                 _moduleManager.RegisterModule(_commandModule);
 
-                // Core_StationRefill: nur wenn Economy aktiv
-                if (_modDetector.IsActive(ModRegistry.Economy))
-                {
-                    _stationRefill = new StationRefillModule();
-                    _moduleManager.RegisterModule(_stationRefill);
-                }
-                else
-                {
-                    LoggerModule.Info("Core", "Session", "Economy nicht aktiv - Core_StationRefill übersprungen");
-                }
+                // Core_Performance (nach FileManager — liest GlobalConfig)
+                _performanceModule = new PerformanceModule();
+                _performanceModule.SetCommandModule(_commandModule);
+                _commandModule.SetPerformanceModule(_performanceModule);
+                _moduleManager.RegisterModule(_performanceModule);
 
-                // M99 - Planet Spawner: nur wenn Sulvax aktiv
-                if (_modDetector.IsActive(ModRegistry.Sulvax))
-                {
-                    _planetSpawner = new PlanetSpawnerModule();
-                    _moduleManager.RegisterModule(_planetSpawner);
-                }
-                else
-                {
-                    LoggerModule.Info("Core", "Session", "Sulvax nicht aktiv - Core_PlanetSpawner übersprungen");
-                }
+                // Core_PlayerTracker (nach Performance — benötigt PerformanceModule)
+                _playerTracker = new PlayerTrackerModule();
+                _playerTracker.SetPerformanceModule(_performanceModule);
+                _commandModule.SetPlayerTracker(_playerTracker);
+                _moduleManager.RegisterModule(_playerTracker);
 
                 _moduleManager.InitAll();
 
-                // Core ist bereit — aktive Mods anschreiben damit sie sich registrieren
+                // ── Core ist bereit — aktive Mods anschreiben ────────────────
                 _commandModule.SendReadyToActiveMods(_modDetector);
 
-                if (_stationRefill != null)
-                    _stationRefill.BeforeStart();
-
-                if (_planetSpawner != null)
-                    _planetSpawner.CheckAndSpawn();
-
-                LoggerModule.Info("Core", "Session", "BeforeStart abgeschlossen");
-                MyLog.Default.WriteLineAndConsole(_moduleManager.GetStatus());
+                PBLog.Log(MOD, "Session", "BeforeStart abgeschlossen — Core v" + VERSION);
             }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] CRITICAL ERROR in BeforeStart:\n" + ex);
+                PBLog.Error(MOD, "Session", "KRITISCHER FEHLER in BeforeStart", ex);
             }
         }
 
@@ -121,7 +106,7 @@ namespace PhantombiteCore
             try { _moduleManager.UpdateAll(); }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] ERROR in UpdateBeforeSimulation:\n" + ex);
+                PBLog.Error(MOD, "Session", "Fehler in UpdateBeforeSimulation", ex);
             }
         }
 
@@ -131,7 +116,7 @@ namespace PhantombiteCore
             try { _moduleManager.SaveAll(); }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] ERROR in SaveData:\n" + ex);
+                PBLog.Error(MOD, "Session", "Fehler in SaveData", ex);
             }
         }
 
@@ -139,14 +124,14 @@ namespace PhantombiteCore
         {
             try
             {
-                LoggerModule.Info("Core", "Session", "UnloadData gestartet");
-                _moduleManager.CloseAll();
+                PBLog.Log(MOD, "Session", "UnloadData");
+                _moduleManager?.CloseAll();
                 _isInitialized = false;
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] UnloadData completed.");
             }
             catch (Exception ex)
             {
-                MyLog.Default.WriteLineAndConsole("[" + MOD_NAME + "] ERROR in UnloadData:\n" + ex);
+                VRage.Utils.MyLog.Default.WriteLineAndConsole(
+                    "[PB.Core] Fehler in UnloadData:\n" + ex);
             }
         }
     }
