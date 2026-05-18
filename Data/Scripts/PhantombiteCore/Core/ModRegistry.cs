@@ -8,7 +8,7 @@ namespace PhantombiteCore.Core
         public const ulong Artefact           = 3689668016UL;
         public const ulong AutoTransfer       = 3693780953UL;
         public const ulong CableWinch         = 3689668160UL;
-        public const ulong Creatures          = 3691346493UL;
+        public const ulong Creatures          = 3728225683UL;
         public const ulong Economy            = 3728099479UL;
         public const ulong Encounter          = 3689684015UL;
         public const ulong Mining             = 3719998525UL;
