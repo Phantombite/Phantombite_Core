@@ -1,0 +1,7 @@
+# Binärdateien nicht als Text behandeln
+*.mwm binary
+*.dds binary
+*.png binary
+*.jpg binary
+*.xwm binary
+*.wav binary

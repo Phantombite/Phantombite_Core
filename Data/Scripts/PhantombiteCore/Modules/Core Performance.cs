@@ -149,8 +149,7 @@ namespace PhantombiteCore.Core
             _tick++;
             _sampleTick++;
 
-            if (_tick < _startupDelayTicks) return;
-            if (_tick == _startupDelayTicks) return;
+            if (_tick <= _startupDelayTicks) return;
 
             CheckHeavyTimeouts();
 
@@ -187,13 +186,7 @@ namespace PhantombiteCore.Core
             _startupDelayTicks          = FileManagerModule.GetValueInt  (config, "Performance", "StartupDelayTicks",          _startupDelayTicks);
             _sampleInterval             = FileManagerModule.GetValueInt  (config, "Performance", "SampleInterval",             _sampleInterval);
 
-            string[] knownMods = {
-                "Mining", "Economy", "AutoTransfer", "CableWinch", "Creatures",
-                "Encounter", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
-                "AdminProjektor", "StationRefill"
-            };
-
-            foreach (var mod in knownMods)
+            foreach (var mod in ModRegistry.PerformanceMods)
             {
                 string section = "Performance." + mod;
                 string modKey  = mod.ToLower();
@@ -237,8 +230,8 @@ namespace PhantombiteCore.Core
             {
                 if (sim >= _recoveryThreshold)
                 {
-                    int duration = (_tick - _dropStartTick) * _sampleInterval;
-                    PBLog.Log(MOD, MDL, "SimSpeed erholt nach ~" + (duration / 60) + "s", 1);
+                    int durationSec = (_tick - _dropStartTick) / 60;
+                    PBLog.Log(MOD, MDL, "SimSpeed erholt nach ~" + durationSec + "s", 1);
                     _inDrop               = false;
                     _strikeCountedThisDrop = false;
                 }
@@ -246,7 +239,7 @@ namespace PhantombiteCore.Core
                 {
                     if (sim < _dropMinSimSpeed) _dropMinSimSpeed = sim;
                     int dropAge = _tick - _dropStartTick;
-                    if (dropAge >= _strikeDurationTicks / _sampleInterval && !_strikeCountedThisDrop)
+                    if (dropAge >= _strikeDurationTicks && !_strikeCountedThisDrop)
                     {
                         _strikeCountedThisDrop = true;
                         HandleDropStrike(sim);
@@ -316,7 +309,7 @@ namespace PhantombiteCore.Core
 
             if (recent != null)
             {
-                int ageSec = (_tick - recent.Tick) * _sampleInterval / 60;
+                int ageSec = (_tick - recent.Tick) / 60;
                 if (ageSec < _heavyGraceWindowSec)
                 {
                     PBLog.Log(MOD, MDL, "Schwache Korrelation: " + recent.ModName +
@@ -376,24 +369,11 @@ namespace PhantombiteCore.Core
         {
             // Kein PB-Mod beteiligt → nur loggen, keine Eskalation
             // Vanilla SE Drops (Planeten, NPC-Spawns etc.) sollen PB-Mods nicht drosseln
+            _unknownDropCount++;
             PBLog.Log(MOD, MDL, "Kein PB-Mod beteiligt | " + GetSeverityStr(_dropMinSimSpeed));
         }
 
         // ── Eskalation ────────────────────────────────────────────────────────
-
-        private void EscalateAllMods(bool permanent, string cause)
-        {
-            if (_commandModule == null) return;
-            var mods = _commandModule.GetRegisteredMods();
-            if (mods == null || mods.Count == 0)
-            {
-                PBLog.Log(MOD, MDL, "Keine Mods registriert — kein Performance-Eingriff", 1);
-                return;
-            }
-            PBLog.Warn(MOD, MDL, "Performance Level erhöht (" + cause + "):");
-            foreach (var mod in mods)
-                EscalateMod(mod, permanent, cause);
-        }
 
         private void EscalateMod(string modName, bool permanent, string cause)
         {
@@ -607,6 +587,10 @@ namespace PhantombiteCore.Core
                     int lvlBefore, lvlAfter;
                     if (!int.TryParse(parts[4].Trim(), out lvlBefore)) continue;
                     if (!int.TryParse(parts[5].Trim(), out lvlAfter)) continue;
+                    float minSim = 0f;
+                    if (parts.Length > 7)
+                        float.TryParse(parts[7].Trim(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out minSim);
                     _history.Add(new PerfHistoryEntry
                     {
                         Timestamp   = ts,
@@ -616,9 +600,7 @@ namespace PhantombiteCore.Core
                         LevelBefore = lvlBefore,
                         LevelAfter  = lvlAfter,
                         Permanent   = parts[6].Trim() == "permanent",
-                        MinSimSpeed = parts.Length > 7
-                            ? float.Parse(parts[7].Trim(),
-                                System.Globalization.CultureInfo.InvariantCulture) : 0f
+                        MinSimSpeed = minSim
                     });
                 }
                 if (_history.Count > 0)
@@ -695,24 +677,12 @@ namespace PhantombiteCore.Core
 
         public List<string> GetRecentLog(int count = 15)
         {
-            var result = new List<string>();
-            try
-            {
-                string fn = FileManagerModule.GetCurrentLogFileName();
-                if (fn == null) return result;
-                string content = FileManagerModule.ReadFile(fn, typeof(FileManagerModule));
-                if (content == null) return result;
-                var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                int start = Math.Max(0, lines.Length - count);
-                for (int i = start; i < lines.Length; i++) result.Add(lines[i]);
-            }
-            catch { }
-            return result;
+            try { return FileManagerModule.GetRecentLogLines(count); }
+            catch { return new List<string>(); }
         }
 
         public int  GetPerfLevel(string modName) {
             int l; return _modPerfLevels.TryGetValue(modName.ToLower(), out l) ? l : 0; }
-        public bool IsInDrop() { return _inDrop; }
 
         // ── Config schreiben ──────────────────────────────────────────────────
 

@@ -1,184 +1,149 @@
-# DEV Funktion — PhantomBite Core
+# DEV Funktion — Phantombite Core
+
+Stand: 2026-09-19 · Code-Stand: Session `VERSION = "2.0.0"` (siehe `DEV_History.md`)
 
 ## Zweck
-PhantomBite Core ist der zentrale Basis-Mod für alle PhantomBite Mods. Er stellt gemeinsam genutzte Item-Definitionen, einen zentralen Logger, FileManager, Command-System und ein Mod-zu-Mod Messaging-System bereit.
 
----
+Core ist die gemeinsame Infrastruktur aller Phantombite-Mods. Jeder Mod ist eine eigene
+Assembly und kann andere Mods nicht direkt aufrufen. Core übernimmt deshalb alles, was
+mehrere Mods brauchen:
 
-## Dateistruktur
+- ein zentrales Command-System (`!pbc ...`) für alle Mods
+- einen zentralen Logger mit Debug-Level pro Mod und eine Log-Datei
+- die globale Konfiguration (`Phantombite_GlobalConfig.ini`)
+- eine Performance-Überwachung, die Mods bei SimSpeed-Einbrüchen drosseln kann
+- eine Spieler-Protokollierung (Join/Leave)
+- den `AdminChip` (Item, das nur Admins platzieren können)
+
+Core hat keine Abhängigkeiten. Alle anderen Phantombite-Mods hängen (optional) an Core.
+
+## Dateien
+
 ```
 Phantombite_Core/
-├── modinfo.sbmi                          (Workshop ID: 3689625814)
-├── metadata.mod
+├── modinfo.sbmi, metadata.mod
 ├── Data/
-│   ├── PhysicalItems/AdminChip.sbc
-│   ├── Blueprints/AdminChip.sbc
+│   ├── PhysicalItems/AdminChip.sbc, Blueprints/AdminChip.sbc
 │   └── Scripts/PhantombiteCore/
 │       ├── Core/
-│       │   ├── IModule.cs                (Interface für alle Module)
-│       │   ├── ModDetector.cs            (Erkennt aktive Mods + Session-Typ)
-│       │   ├── ModRegistry.cs            (Workshop IDs + Kanäle + Namen)
-│       │   ├── ModuleManager.cs          (Verwaltet Module mit Fehler-Isolation)
-│       │   └── Session.cs                (Haupt-Session-Komponente)
+│       │   ├── Session.cs         Einstieg, legt Module an, sendet READY
+│       │   ├── ModuleManager.cs   Init/Update/Save/Close, Modul wird nach 3 Abstürzen abgeschaltet
+│       │   ├── IModule.cs         Interface: ModuleName, Init, Update, SaveData, Close
+│       │   ├── ModDetector.cs     Welche Mods laufen (Workshop / Lokal / Hybrid)
+│       │   └── ModRegistry.cs     ZENTRALE LISTE: Workshop-IDs, lokale Namen, Kanäle
 │       └── Modules/
-│           ├── Core_Logger.cs            (M01 — Zentraler Logger)
-│           ├── Core_FileManager.cs       (M02 — Log-Dateien + GlobalConfig)
-│           ├── Core_Command.cs           (M03 — Command-System + Messaging)
-│           └── Core_PlanetSpawner.cs     (M99 — Sulvax Planet Spawner, optional)
-├── Models/Items/AdminChip_Item.mwm
-└── Textures/GUI/Icons/Items/AdminChip_Item.dds
+│           ├── Core logger.cs         PBLog (statischer Logger) + LoggerModule
+│           ├── Core filemanager.cs    GlobalConfig, Log-Datei, Datei-API für andere Mods
+│           ├── Core command.cs        !pbc Commands, Mod-Registrierung, Messaging
+│           ├── Core Performance.cs    SimSpeed-Überwachung und Eskalation
+│           └── Core playertracker.cs  Join/Leave-Protokoll
+├── Models/Items, Textures/GUI/Icons/Items   (AdminChip)
+└── DEV_*.md
 ```
 
----
+`ModRegistry.cs` ist die einzige Quelle für IDs, Namen und Kanäle. Es gibt keine zweite Liste
+mehr (die frühere `Phantombite IDs.txt` wurde entfernt).
 
-## Module
+## Ladereihenfolge (`Session.BeforeStart`)
 
-### Core_Logger (M01)
-Zentraler Logger für alle PhantomBite Mods. Schreibt in einen Buffer den Core_FileManager alle 5 Sekunden in die Log-Datei schreibt.
+1. `ModDetector.Scan()` — aktive Mods und Session-Typ erkennen
+2. `Core_Logger` → 3. `Core_FileManager` (GlobalConfig, Log-Datei) → 4. `Core_Command`
+   → 5. `Core_Performance` → 6. `Core_PlayerTracker` (in genau dieser Reihenfolge registriert)
+3. `ModuleManager.InitAll()`
+4. `Core_Command.SendReadyToActiveMods()` — schreibt alle aktiven Mods an (READY)
 
-**Log-Level pro Mod:**
-- `Normal` — nur WARN + ERROR
-- `Debug` — + INFO + DEBUG
-- `Trace` — + alles (für Entwicklung)
+## Logger (`PBLog`)
 
-**Log-Format:**
-```
-2026-03-27 04:01:05.335 [DEBUG] Phantombite_Artefact/Artefact_Controller : SCHOCKWELLE — Impuls #1
-```
+Debug-Level pro Mod: `0` = immer sichtbar, `1` = wichtige Debug-Infos, `2` = Details.
+Level 0, WARN und ERROR landen in der Log-Datei, Level 1 und 2 nur im SE-Log.
 
-**API:**
 ```csharp
-LoggerModule.Warn("Phantombite_Core", "Core_Command", "Nachricht");
-LoggerModule.Error("Phantombite_Core", "Core_Command", "Nachricht", ex);
-LoggerModule.Info("Phantombite_Core", "Core_Command", "Nachricht");   // ab Debug
-LoggerModule.Debug("Phantombite_Core", "Core_Command", "Nachricht");  // ab Debug
-LoggerModule.Trace("Phantombite_Core", "Core_Command", "Nachricht");  // ab Trace
-LoggerModule.SetLevel("Phantombite_Artefact", LoggerModule.LogLevel.Debug);
-LoggerModule.FlushBuffer(); // von Core_FileManager aufgerufen
+PBLog.Log("Phantombite_Core", "Core_Command", "Text");        // Level 0
+PBLog.Log("Phantombite_Core", "Core_Command", "Text", 1);     // nur ab Debug-Level 1
+PBLog.Warn(mod, modul, "Text");   PBLog.Error(mod, modul, "Text", exception);
 ```
 
----
+Format im SE-Log: `[PB.Economy][1] FileManager: Text` (ohne Präfix `Phantombite_`).
 
-### Core_FileManager (M02)
-Drei Aufgaben:
+## FileManager und GlobalConfig
 
-**1. GlobalConfig** (`Phantombite_GlobalConfig.ini`) — Nur auf Server
-```ini
-[Debug]
-Phantombite_Core=Normal
-Phantombite_Artefact=Normal
-Phantombite_Economy=Normal
-... (alle 9 Mods)
-```
+- `Phantombite_GlobalConfig.ini` (nur auf dem Server, wird bei Fehlen mit Standardwerten angelegt):
+  - `[Debug]` ein Eintrag pro Mod, Schlüssel = lokaler Name aus `ModRegistry.AllLocalNames`
+  - `[Performance]` globale Schwellwerte, `[Performance.<Mod>]` je Mod (`EscalationPath`, `CorrelationsBeforeEscalate`, `CurrentLevel`)
+- Log-Datei pro Start: `Phantombite_<Datum>_<Uhrzeit>.log`. Ab ca. 0,8 MB (`MAX_SEGMENT_CHARS`) beginnt eine neue Datei `..._Teil2.log` usw.
+  Es bleiben die letzten 20 Dateien (`MAX_LOGS`), Index in `Phantombite_LogIndex.txt`. Der aktuelle Teil liegt im Speicher, die Datei wird nur geschrieben, nie gelesen.
+- Der Log-Buffer wird adaptiv geschrieben (60–300 s, nur bei SimSpeed ≥ 0.90), bei 50 MB sofort.
+- Player-Log (`Phantombite_PlayerLog.txt`): einmal beim Start geladen, auf 5000 Zeilen begrenzt.
+- Datei-API für andere Code-Stellen im Core: `ReadFile`, `WriteFile`, `FileExists`, `DeleteFile`,
+  `ParseINI` (Schlüssel `Section.Key`), `GetValue/GetValueInt/GetValueFloat/GetValueBool`.
 
-**2. Log-Management** — Pro Start neue Datei `Phantombite_Core_DATUM_UHRZEIT.log`, max 20 Logs, Buffer alle 5s schreiben.
+## Commands (`!pbc`, Fallback `/pbc`)
 
-**3. Helfer-API für andere Mods:**
-```csharp
-FileManagerModule.ReadFile("file.ini", typeof(MyClass));
-FileManagerModule.WriteFile("file.ini", content, typeof(MyClass));
-FileManagerModule.ParseINI(content); // → Dictionary<string,string> "Section.Key"
-FileManagerModule.GetValue/Int/Float/Bool(...)
-```
+| Command | Wer | Wirkung |
+|---|---|---|
+| `!pbc help [Seite]`, `!pbc help <mod> [Seite]` | alle | Hilfe, 7 Zeilen pro Seite |
+| `!pbc status` | alle | Registrierte Mods, Versionen, Debug-Level |
+| `!pbc players` | alle | Aktive Spieler mit Online-Zeit |
+| `!pbc debug <mod\|all> <0\|1\|2>` | Admin | 1× = temporär, 2× gleicher Wert = dauerhaft in GlobalConfig |
+| `!pbc perf status \| log \| reset [mod]` | Admin | Performance-Levels, letzte Log-Zeilen, Zurücksetzen |
+| `!pbc log show \| copy` | Admin | Letzte Zeilen anzeigen / aktuellen Log-Teil in die Zwischenablage |
+| `!pbc <mod> [id\|all] <command> [args]` | je Command | Command eines registrierten Mods |
 
----
+Admin-only-Mods: Hat ein Mod nur Admin-Commands, sehen normale Spieler ihn nicht in der Hilfe.
+Debug-Namen werden tolerant aufgelöst (`cablewinch` → `Phantombite_Cable_Winch`),
+siehe `ModRegistry.ResolveLocalName`.
 
-### Core_Command (M03)
-Zentrales Command-System mit Mod-zu-Mod Messaging.
+Im Multiplayer schickt der Client den Command als Paket (5997) an den Server. Der Server nimmt es
+über `RegisterSecureMessageHandler` an und **glaubt dem Paket nichts**: Er kennt den Absender von SE,
+akzeptiert nur Kanäle registrierter Mods, nur `CMD`-Nachrichten und nur bekannte Commands, prüft
+Admin-Commands gegen das echte Admin-Recht des Absenders und ersetzt `STEAM:` durch dessen echte
+SteamId. Erst dann geht die Nachricht an den Mod. Das Ergebnis kommt als Paket (5998) zurück und
+wird als HUD-Meldung angezeigt (grün = ok, rot = Fehler). Gleicher Command + gleiche Argumente + gleicher Spieler
+gilt als Duplikat, solange die Antwort aussteht. Ohne Antwort nach 10 s gibt es eine WARN im Log.
 
-**Prefix:** `!pbc` (auch `/pbc` als Fallback)
+## Nachrichten-Protokoll (Mod ↔ Core)
 
-**Eingebaute Core-Commands:**
-| Command | Beschreibung | Admin |
-|---------|-------------|-------|
-| `!pbc help [seite]` | Übersicht aller Commands (7 Zeilen/Seite) | Nein |
-| `!pbc help <mod>` | Direkt Mod-Help anzeigen | Nein |
-| `!pbc status` | Alle aktiven Mods + Debug-Status | Nein |
-| `!pbc debug <mod\|all> normal\|debug\|trace` | 1x=temporär, 2x=permanent | Ja |
-| `!pbc log copy` | Log in Zwischenablage kopieren | Ja |
-| `!pbc log show` | Letzte Log-Zeilen im Chat anzeigen | Ja |
+Details und Beispiele: `DEV_Anbindung.md`.
 
-**Mod-Commands mit ID-Support:**
-```
-!pbc artefact on          → ID=0
-!pbc artefact 1 on        → ID=1
-!pbc artefact all reset   → alle
-```
+| Richtung | Kanal | Nachricht |
+|---|---|---|
+| Core → Mod | Mod-Kanal | `READY` · `LOGLEVEL\|0..2` · `CMD\|cmd\|args...\|STEAM:id` · `PERFLEVEL\|n` |
+| Mod → Core | 1995000 | `REGISTER\|name\|beschreibung\|version\|kanal\|cmd:admin:beschr...` (Version optional, altes Format wird erkannt) |
+| Mod → Core | 1995000 | `HEAVY_START\|mod\|op` · `HEAVY_END\|mod\|op` · `PERFACK\|mod\|level` |
+| Mod → Core | 1995999 | `LOG\|Phantombite_X\|0..2\|Modul\|Text` · `CMDRESULT\|mod\|cmd\|args\|steamId\|ok\|Text` |
 
-**READY-System (Mod-Registrierung beim Start):**
-1. Core sendet `"READY"` an alle aktiven Mod-Kanäle
-2. Mod antwortet mit: `"REGISTER|modname|beschreibung|kanal|cmd:adminOnly:desc|..."`
-3. Core sendet zurück: `"LOGLEVEL|normal|debug|trace"`
-4. Commands kommen als `"CMD|commandname|arg1|arg2|STEAM:steamId"` vom Core
+Kanäle: siehe `ModRegistry.Channel*` (1995000 Core, 1995001–1995014 je Mod, 1995999 Log/Ergebnis).
+Kanal 1995015 ist unbenutzt und 1995016 gehört StationRefill.
 
-**CMDRESULT-System (Feedback nach Command-Ausführung):**
-1. Mod führt Command aus
-2. Mod sendet auf Kanal 1995999: `"CMDRESULT|modname|cmd|args|steamId|ok|Nachricht"`
-3. Core zeigt HUD-Notification: Grün bei Erfolg, Rot bei Fehler
-4. Kein Result nach 2 Sekunden → WARN im Log
+## Performance-System
 
-**Deduplizierung:**
-- Key: `"modName|cmd|args|steamId"` — eindeutig pro Spieler + Command
-- Duplikat innerhalb Timeout → HUD "bereits in Bearbeitung"
+Ziel: Bricht die SimSpeed ein, soll Core erkennen, welcher Phantombite-Mod schuld ist, und ihn
+in einen Sparmodus schicken (`PERFLEVEL|n`).
 
-**Log-Kanal 1995999:**
-- Mods senden Logs: `"LOG|Phantombite_Artefact|DEBUG|Artefact_Controller|Nachricht"`
-- Core filtert nach gesetztem Log-Level und schreibt in Phantombite-Log
+1. Alle `SampleInterval` Ticks wird `ServerSimulationRatio` gemessen (erst nach `StartupDelayTicks`).
+2. Fällt sie unter `DropThreshold` und bleibt `StrikeDurationTicks` Ticks dort, zählt ein Strike.
+   Nach einem Spieler-Join gibt es 30 s Schutz.
+3. Läuft gerade eine HEAVY-Operation eines Mods (oder lag sie höchstens `HeavyGraceWindowSec`
+   Sekunden zurück), zählt der Treffer für diesen Mod: Vertrauen 1.0 wenn der Server vorher stabil
+   war, sonst 0.3.
+4. Erreicht die Summe `CorrelationsBeforeEscalate`, steigt das Level des Mods entlang seines
+   `EscalationPath`. Wiederholungstäter (gleiche Mod-Version) werden dauerhaft eingestuft.
+5. Drops ohne Phantombite-Beteiligung werden nur gezählt und geloggt, nie eskaliert.
+6. Neue Mod-Version → History und Level des Mods werden zurückgesetzt.
 
-**Admin-only Mod Logik:**
-- Hat ein Mod nur `adminOnly=true` Commands → für normale Spieler komplett unsichtbar
-- Sobald ein `adminOnly=false` Command registriert wird → automatisch öffentlich
+Historie: `Phantombite_PerfHistory.txt`. Dauerhafte Levels stehen in der GlobalConfig (`CurrentLevel`).
 
----
+## ModDetector
 
-### Core_PlanetSpawner (M99)
-Wird nur geladen wenn Phantombite_Sulvax aktiv ist. Stellt sicher dass der Sulvax-Planet an der korrekten Position existiert.
-
----
-
-### ModDetector
-Erkennt beim Start welche Mods aktiv sind.
-
-| Property | Beschreibung |
-|----------|-------------|
-| `IsServer` | true im Singleplayer UND auf Dedicated Server |
-| `IsSingleplayer` | true nur im Singleplayer (OFFLINE Mode) |
-| `IsDevMode` | true wenn Core lokal läuft (keine Workshop-ID) |
-
-**Dev-Mode:** Erkennung per Mod-Name statt Workshop-ID — so funktioniert alles lokal ohne Upload.
-
----
+Erkennt aktive Mods per Workshop-ID **und** per lokalem Namen. `Mode`: `Workshop`, `Local`
+oder `Hybrid`; `IsDevMode` ist wahr, sobald nicht alles über Workshop läuft.
+Loggt beim Start aktive Phantombite-Mods, MES-Abhängigkeit (`RequiresMES`) und fremde Mods.
 
 ## AdminChip
-- **TypeId:** Component / **SubtypeId:** AdminChip
-- **Masse:** 0.25 kg / **Volumen:** 0.2 L
-- **Mindestpreis:** 100.000 Credits / **Blueprint Bauzeit:** 99.999 Sekunden
-- Nicht herstellbar, nicht kaufbar — dient als Sicherheitsmechanismus
-- Blöcke mit AdminChip als CriticalComponent können nur von Server-Admins platziert werden
 
----
+`Component/AdminChip`, 0.25 kg, 0.2 L, nicht herstellbar und nicht kaufbar. Blöcke mit AdminChip
+als kritischer Komponente können nur Server-Admins platzieren.
 
-## Ladereihenfolge der Module
-```
-Session.BeforeStart()
-  1. ModDetector.Scan()        — Mods + Session-Typ erkennen
-  2. Core_Logger.Init()        — Logger bereit
-  3. Core_FileManager.Init()   — GlobalConfig laden, Log-Datei erstellen
-  4. Core_Command.Init()       — Commands + Messaging registrieren
-  5. [Core_PlanetSpawner]      — Optional, nur wenn Sulvax aktiv
-  6. CommandModule.SendReadyToActiveMods() — Alle Mods anschreiben
-  7. [PlanetSpawner.CheckAndSpawn()]       — Optional
-```
+## Bekannte Grenzen
 
----
-
-## Messaging Protokoll (vollständig)
-
-| Richtung | Kanal | Format | Zweck |
-|----------|-------|--------|-------|
-| Core → Mod | 1995001-1995008 | `READY` | Start-Signal |
-| Mod → Core | 1995000 | `REGISTER\|name\|desc\|kanal\|cmd:admin:desc\|...` | Registrierung |
-| Core → Mod | 1995001-1995008 | `LOGLEVEL\|normal` | Log-Level setzen |
-| Core → Mod | 1995001-1995008 | `CMD\|cmdname\|arg1\|STEAM:steamId` | Command ausführen |
-| Mod → Core | 1995999 | `CMDRESULT\|mod\|cmd\|args\|steamId\|ok\|msg` | Command-Ergebnis |
-| Mod → Core | 1995999 | `LOG\|Phantombite_X\|DEBUG\|Modul\|Nachricht` | Log-Eintrag |
+Siehe `DEV_TODO.md` (Abschnitt „Bekannte Schwächen“).

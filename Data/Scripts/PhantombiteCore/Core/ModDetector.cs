@@ -69,7 +69,7 @@ namespace PhantombiteCore.Core
 
             bool coreById   = _activeIds.Contains(ModRegistry.Core);
             bool coreByName = _activeNames.Contains(ModRegistry.LocalCore);
-            if (coreById)               byId++;
+            if (coreById)                byId++;
             if (coreByName && !coreById) byName++;
 
             if      (byId > 0 && byName == 0) Mode = LoadMode.Workshop;

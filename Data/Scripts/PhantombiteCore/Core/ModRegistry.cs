@@ -73,7 +73,46 @@ namespace PhantombiteCore.Core
             Sulvax, SulvaxRespawnRover, WaterElectrolyzer
         };
 
+        // ── Alle lokalen Namen (Reihenfolge wie in der GlobalConfig) ─────────
+        public static readonly string[] AllLocalNames =
+        {
+            LocalCore, LocalAdminProjektor, LocalArtefact, LocalAutoTransfer,
+            LocalCableWinch, LocalCreatures, LocalEconomy, LocalEncounter,
+            LocalMining, LocalPandora, LocalPlanetSpawner, LocalServerAddon,
+            LocalStationRefill, LocalSulvax, LocalSulvaxRespawnRover, LocalWaterElectrolyzer
+        };
+
+        // ── Mods mit eigenem Performance-Abschnitt in der GlobalConfig ───────
+        // Kurznamen, so wie sie sich per REGISTER melden (Gross-/Kleinschreibung egal).
+        public static readonly string[] PerformanceMods =
+        {
+            "Mining", "Economy", "AutoTransfer", "CableWinch", "Creatures",
+            "Encounter", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
+            "AdminProjektor", "StationRefill", "Pandora"
+        };
+
         // ── Hilfsmethoden ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Findet den lokalen Namen zu einem bei REGISTER gemeldeten Kurznamen.
+        /// Gross-/Kleinschreibung, Unterstriche und das Präfix "Phantombite_" werden ignoriert:
+        /// "cablewinch" → "Phantombite_Cable_Winch". Gibt null zurück wenn unbekannt.
+        /// </summary>
+        public static string ResolveLocalName(string shortName)
+        {
+            if (string.IsNullOrEmpty(shortName)) return null;
+            string wanted = NormalizeName(shortName);
+            foreach (var local in AllLocalNames)
+                if (NormalizeName(local) == wanted) return local;
+            return null;
+        }
+
+        private static string NormalizeName(string name)
+        {
+            string n = name.ToLower();
+            if (n.StartsWith("phantombite_")) n = n.Substring("phantombite_".Length);
+            return n.Replace("_", "");
+        }
 
         public static string GetLocalName(ulong modId)
         {

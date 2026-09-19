@@ -1,6 +1,3 @@
-using System;
-using Sandbox.ModAPI;
-
 namespace PhantombiteCore.Core
 {
     /// <summary>

@@ -11,13 +11,11 @@ namespace PhantombiteCore
     /// PhantombiteCore Session — Einstiegspunkt.
     ///
     /// Modul-Reihenfolge (fest):
-    ///   1. Core_Logger       — PBLog initialisieren
-    ///   2. Core_FileManager  — GlobalConfig laden, Debug-Level setzen
-    ///   3. Core_Command      — Commands + Mod-Registrierung
-    ///
-    /// Ausgebaut:
-    ///   Core_PlanetSpawner → Phantombite_PlanetSpawner (eigener Mod)
-    ///   Core_StationRefill → Phantombite_StationRefill (eigener Mod)
+    ///   1. Core_Logger        — PBLog initialisieren
+    ///   2. Core_FileManager   — GlobalConfig laden, Debug-Level setzen
+    ///   3. Core_Command       — Commands + Mod-Registrierung
+    ///   4. Core_Performance   — SimSpeed-Überwachung (liest GlobalConfig)
+    ///   5. Core_PlayerTracker — Spieler Join/Leave (meldet an Performance)
     /// </summary>
     [MySessionComponentDescriptor(MyUpdateOrder.BeforeSimulation)]
     public class PhantombiteCoreSession : MySessionComponentBase

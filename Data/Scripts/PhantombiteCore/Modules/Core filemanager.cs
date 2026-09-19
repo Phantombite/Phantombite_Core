@@ -34,11 +34,14 @@ namespace PhantombiteCore.Modules
         private const string LOG_INDEX      = "Phantombite_LogIndex.txt";
         private const string LOG_PREFIX     = "Phantombite_";
         private const string LOG_EXT        = ".log";
-        private const int    MAX_LOGS       = 10;
-        private const int    FLUSH_INTERVAL = 300; // alle 300 Ticks (~5 Sek) flushen
+        private const int    MAX_LOGS       = 20;      // Dateien (Teile zählen einzeln)
+        private const int    MAX_SEGMENT_CHARS = 400000; // ~0,8 MB pro Log-Teil
 
         private bool   _isServer        = false;
         private string _currentLogFile  = null;
+        private string _sessionStamp    = null;
+        private int    _segmentNo       = 1;
+        private readonly StringBuilder _segment = new StringBuilder();
         private ModDetector _modDetector;
         private Dictionary<string, string> _parsedConfig = null;
 
@@ -183,24 +186,10 @@ namespace PhantombiteCore.Modules
                 var config = ParseINI(content);
                 _parsedConfig = config;
 
-                // Kern immer setzen
+                // Core immer, alle anderen nur wenn aktiv
                 ApplyDebugLevel(config, ModRegistry.LocalCore, true);
-
-                // Alle anderen nur wenn aktiv
-                ApplyDebugLevel(config, ModRegistry.LocalAdminProjektor, _modDetector.IsActive(ModRegistry.AdminProjektor));
-                ApplyDebugLevel(config, ModRegistry.LocalArtefact,       _modDetector.IsActive(ModRegistry.Artefact));
-                ApplyDebugLevel(config, ModRegistry.LocalAutoTransfer,   _modDetector.IsActive(ModRegistry.AutoTransfer));
-                ApplyDebugLevel(config, ModRegistry.LocalCableWinch,     _modDetector.IsActive(ModRegistry.CableWinch));
-                ApplyDebugLevel(config, ModRegistry.LocalCreatures,      _modDetector.IsActive(ModRegistry.Creatures));
-                ApplyDebugLevel(config, ModRegistry.LocalEconomy,        _modDetector.IsActive(ModRegistry.Economy));
-                ApplyDebugLevel(config, ModRegistry.LocalEncounter,      _modDetector.IsActive(ModRegistry.Encounter));
-                ApplyDebugLevel(config, ModRegistry.LocalMining,         _modDetector.IsActive(ModRegistry.Mining));
-                ApplyDebugLevel(config, ModRegistry.LocalPlanetSpawner,  _modDetector.IsActive(ModRegistry.PlanetSpawner));
-                ApplyDebugLevel(config, ModRegistry.LocalServerAddon,    _modDetector.IsActive(ModRegistry.ServerAddon));
-                ApplyDebugLevel(config, ModRegistry.LocalStationRefill,  _modDetector.IsActive(ModRegistry.StationRefill));
-                ApplyDebugLevel(config, ModRegistry.LocalSulvax,         _modDetector.IsActive(ModRegistry.Sulvax));
-                ApplyDebugLevel(config, ModRegistry.LocalSulvaxRespawnRover, _modDetector.IsActive(ModRegistry.SulvaxRespawnRover));
-                ApplyDebugLevel(config, ModRegistry.LocalWaterElectrolyzer,  _modDetector.IsActive(ModRegistry.WaterElectrolyzer));
+                foreach (var id in ModRegistry.AllPbIds)
+                    ApplyDebugLevel(config, ModRegistry.GetLocalName(id), _modDetector.IsActive(id));
 
                 PBLog.Log(MOD, MODULE, "GlobalConfig geladen");
             }
@@ -234,33 +223,20 @@ namespace PhantombiteCore.Modules
             sb.AppendLine("# ==============================================================================");
             sb.AppendLine();
             sb.AppendLine("[Debug]");
-            sb.AppendLine("Phantombite_Core=0");
-            sb.AppendLine("Phantombite_AdminProjektor=0");
-            sb.AppendLine("Phantombite_Artefact=0");
-            sb.AppendLine("Phantombite_AutoTransfer=0");
-            sb.AppendLine("Phantombite_CableWinch=0");
-            sb.AppendLine("Phantombite_Creatures=0");
-            sb.AppendLine("Phantombite_Economy=0");
-            sb.AppendLine("Phantombite_Encounter=0");
-            sb.AppendLine("Phantombite_Mining=0");
-            sb.AppendLine("Phantombite_PlanetSpawner=0");
-            sb.AppendLine("Phantombite_Server_Addon=0");
-            sb.AppendLine("Phantombite_StationRefill=0");
-            sb.AppendLine("Phantombite_Sulvax=0");
-            sb.AppendLine("Phantombite_SulvaxRespawnRover=0");
-            sb.AppendLine("Phantombite_WaterElectrolyzer=0");
+            foreach (var localName in ModRegistry.AllLocalNames)
+                sb.AppendLine(localName + "=0");
             sb.AppendLine();
             sb.AppendLine("# ==============================================================================");
             sb.AppendLine("# PERFORMANCE SYSTEM");
             sb.AppendLine("# ==============================================================================");
-            sb.AppendLine("# SampleInterval          — SimSpeed Prüfung alle N Ticks");
-            sb.AppendLine("# DropThreshold           — Unter diesem Wert = Drop erkannt (0.0-1.0)");
-            sb.AppendLine("# RecoveryThreshold       — Über diesem Wert = Erholt");
-            sb.AppendLine("# RecoveryTicks           — Ticks über Threshold bis Recovery bestätigt");
-            sb.AppendLine("# PersistentDropTicks     — Anhaltender Drop → alle Mods eskaliert");
-            sb.AppendLine("# CorrelationsBeforeEscalate — Wie oft Muster auftreten vor Eskalation");
-            sb.AppendLine("# UnknownSourcePerfLevel  — Perf Level bei unbekannter Ursache (temporär)");
-            sb.AppendLine("# StartupDelayTicks       — Ticks nach Start bis Messung beginnt (3600=1Min, 18000=5Min)");
+            sb.AppendLine("# SampleInterval             — SimSpeed Prüfung alle N Ticks");
+            sb.AppendLine("# DropThreshold              — Unter diesem Wert = Drop erkannt (0.0-1.0)");
+            sb.AppendLine("# RecoveryThreshold          — Über diesem Wert = Drop beendet");
+            sb.AppendLine("# StrikeDurationTicks        — Drop muss so viele Ticks anhalten bevor er zählt");
+            sb.AppendLine("# CorrelationsBeforeEscalate — Effektive Treffer bis ein Mod eskaliert wird");
+            sb.AppendLine("# HeavyTimeoutTicks          — HEAVY-Operation ohne HEAVY_END wird nach N Ticks geschlossen");
+            sb.AppendLine("# HeavyGraceWindowSec        — Sekunden nach HEAVY_START in denen ein Drop noch zugeordnet wird");
+            sb.AppendLine("# StartupDelayTicks          — Ticks nach Start bis Messung beginnt (3600=1Min, 18000=5Min)");
             sb.AppendLine("# ==============================================================================");
             sb.AppendLine();
             sb.AppendLine("[Performance]");
@@ -278,12 +254,7 @@ namespace PhantombiteCore.Modules
             sb.AppendLine("# Bekannte Muster (permanent) bleiben über Neustart erhalten.");
             sb.AppendLine();
 
-            string[] perfMods = {
-                "Mining", "Economy", "AutoTransfer", "CableWinch", "Creatures",
-                "Encounter", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
-                "AdminProjektor", "StationRefill"
-            };
-            foreach (var mod in perfMods)
+            foreach (var mod in ModRegistry.PerformanceMods)
             {
                 sb.AppendLine("[Performance." + mod + "]");
                 sb.AppendLine("EscalationPath=0,1,2,3");
@@ -301,30 +272,40 @@ namespace PhantombiteCore.Modules
         {
             try
             {
-                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-                _currentLogFile  = LOG_PREFIX + timestamp + LOG_EXT;
-
-                // Index laden, alten Log eintragen, alte löschen
-                var index = LoadLogIndex();
-                index.Add(_currentLogFile);
-                while (index.Count > MAX_LOGS)
-                {
-                    string old = index[0];
-                    index.RemoveAt(0);
-                    try { MyAPIGateway.Utilities.DeleteFileInWorldStorage(old, typeof(FileManagerModule)); }
-                    catch { }
-                }
-                SaveLogIndex(index);
-
-                // Erste Zeile schreiben
-                CoreAppendToLog("# Phantombite Core Log — " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-                CoreAppendToLog("# ==========================================");
+                _sessionStamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                _segmentNo    = 1;
+                StartLogSegment("# Phantombite Core Log — " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 PBLog.Log(MOD, MODULE, "Log-Datei: " + _currentLogFile);
             }
             catch (Exception ex)
             {
                 PBLog.Error(MOD, MODULE, "Fehler beim Erstellen der Log-Datei", ex);
             }
+        }
+
+        /// <summary>
+        /// Beginnt eine neue Log-Datei (Teil 1 = Sitzungsstart, danach "_Teil2" usw.),
+        /// trägt sie im Index ein und löscht die ältesten Dateien über MAX_LOGS.
+        /// </summary>
+        private void StartLogSegment(string headerLine)
+        {
+            _currentLogFile = LOG_PREFIX + _sessionStamp +
+                (_segmentNo > 1 ? "_Teil" + _segmentNo : "") + LOG_EXT;
+            _segment.Clear();
+            _segment.Append(headerLine).Append('\n');
+            _segment.Append("# ==========================================").Append('\n');
+
+            var index = LoadLogIndex();
+            index.Add(_currentLogFile);
+            while (index.Count > MAX_LOGS)
+            {
+                string old = index[0];
+                index.RemoveAt(0);
+                try { MyAPIGateway.Utilities.DeleteFileInWorldStorage(old, typeof(FileManagerModule)); }
+                catch { }
+            }
+            SaveLogIndex(index);
+            WriteSegment();
         }
 
         private void FlushBuffer()
@@ -341,19 +322,33 @@ namespace PhantombiteCore.Modules
             catch { }
         }
 
+        /// <summary>
+        /// Hängt Text an das aktuelle Log-Segment an. Der Inhalt liegt im Speicher (_segment),
+        /// die Datei wird nur geschrieben, nie gelesen. Wird ein Segment größer als
+        /// MAX_SEGMENT_CHARS, beginnt eine neue Datei — so bleibt jeder Schreibvorgang klein.
+        /// </summary>
         private void CoreAppendToLog(string content)
         {
             if (_currentLogFile == null) return;
             try
             {
-                string existing = "";
-                if (MyAPIGateway.Utilities.FileExistsInWorldStorage(_currentLogFile, typeof(FileManagerModule)))
+                if (_segment.Length + content.Length > MAX_SEGMENT_CHARS)
                 {
-                    using (var r = MyAPIGateway.Utilities.ReadFileInWorldStorage(_currentLogFile, typeof(FileManagerModule)))
-                        existing = r.ReadToEnd();
+                    _segmentNo++;
+                    StartLogSegment("# Fortsetzung Teil " + _segmentNo + " — " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 }
+                _segment.Append(content).Append('\n');
+                WriteSegment();
+            }
+            catch { }
+        }
+
+        private void WriteSegment()
+        {
+            try
+            {
                 using (var w = MyAPIGateway.Utilities.WriteFileInWorldStorage(_currentLogFile, typeof(FileManagerModule)))
-                    w.Write(existing + content + "\n");
+                    w.Write(_segment.ToString());
             }
             catch { }
         }
@@ -392,16 +387,26 @@ namespace PhantombiteCore.Modules
         // ── Public Log API für Command (!pbc log) ────────────────────────────
 
         public string GetCurrentLogFile()         { return _currentLogFile; }
-        public static string GetCurrentLogFileName() { return _instance?._currentLogFile; }
 
+        /// <summary>Inhalt des aktuellen Log-Teils (aus dem Speicher, ohne Dateizugriff).</summary>
         public string ReadCurrentLog()
         {
             if (_currentLogFile == null) return null;
             FlushBuffer(); // Erst flushen damit alles aktuell ist
-            return CoreReadFile(_currentLogFile);
+            return _segment.ToString();
         }
 
-        public List<string> GetLogIndex()  { return LoadLogIndex(); }
+        /// <summary>Die letzten Zeilen des aktuellen Log-Teils inkl. noch nicht geschriebener Zeilen.</summary>
+        public static List<string> GetRecentLogLines(int count)
+        {
+            var result = new List<string>();
+            if (_instance == null || _instance._currentLogFile == null) return result;
+            _instance.FlushBuffer();
+            var lines = _instance._segment.ToString().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            int start = Math.Max(0, lines.Length - count);
+            for (int i = start; i < lines.Length; i++) result.Add(lines[i]);
+            return result;
+        }
 
         private string CoreReadFile(string filename)
         {

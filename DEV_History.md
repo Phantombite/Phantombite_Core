@@ -1,4 +1,49 @@
-# DEV History — PhantomBite Core
+# DEV History — Phantombite Core
+
+## 2026-09-19 — Bereinigung (noch nicht veröffentlicht, Code-Version weiter 2.0.0)
+
+Durchgang durch den gesamten Core-Code. Kompiliert fehlerfrei gegen die SE-DLLs (LangVersion 6).
+
+### Behobene Fehler
+- **Debug-Level wirkte bei vielen Mods nicht:** Core baute Namen mit `"Phantombite_" + Großbuchstabe`
+  (`Phantombite_Autotransfer`), die Config nutzt aber `Phantombite_AutoTransfer`, `Phantombite_Cable_Winch`,
+  `Phantombite_Server_Addon` usw. Betroffen waren `!pbc debug <mod>`, `!pbc status` und das an die Mods
+  gesendete `LOGLEVEL` (AutoTransfer, CableWinch, PlanetSpawner, StationRefill, AdminProjektor,
+  WaterElectrolyzer, ServerAddon). Neu: `ModRegistry.ResolveLocalName`, eine Auflösung für alle Stellen.
+- **GlobalConfig hatte falsche Schlüssel** für CableWinch (`Phantombite_CableWinch`) und
+  SulvaxRespawnRover (`Phantombite_SulvaxRespawnRover`), Pandora fehlte. Die Liste wird jetzt aus
+  `ModRegistry.AllLocalNames` erzeugt.
+- **Performance-Zeiten falsch:** `_tick` zählt Ticks, wurde aber zusätzlich mit `SampleInterval` malgenommen bzw.
+  geteilt. Ein Drop zählte schon nach 9 statt 90 Ticks als Strike, das Zuordnungsfenster nach HEAVY_START
+  war statt 12 s nur etwa 1,2 s lang, „SimSpeed erholt nach ~Ns“ zeigte 10× zu viel. Jetzt echte
+  Ticks/Sekunden. **Das Verhalten ändert sich spürbar:** Drops zählen später (weniger Fehlalarme),
+  werden aber länger einem Mod zugeordnet.
+- „Externe Drops“ in `!pbc perf status` blieb immer 0, jetzt wird gezählt.
+- `!pbc debug`: fehlte der Schlüssel in einer älteren GlobalConfig, wurde die Einstellung nicht gespeichert. Jetzt wird sie unter `[Debug]` ergänzt.
+- Performance-History: ein einziger fehlerhafter Zahlenwert brach das komplette Laden ab. Jetzt tolerant.
+- Pandora bekam kein `READY`, obwohl ID und Kanal im Registry standen.
+
+### Sicherheit und Log-Dateien
+- **Sicherheitslücke geschlossen:** Bisher prüfte nur der Client das Admin-Recht, der Server gab jedes Paket 5997
+  ungeprüft an den Mod weiter (`STEAM:` kam vom Client). Jetzt `RegisterSecureMessageHandler`: echter Absender,
+  Kanal-/Typ-/Command-Prüfung, Admin-Recht serverseitig, `STEAM:` wird überschrieben, Paketgröße begrenzt.
+- **Log-Datei:** Kein Lesen der ganzen Datei mehr bei jedem Schreiben. Inhalt liegt im Speicher, Datei wird in Teilen
+  zu ca. 0,8 MB geschrieben (`_Teil2` ...), `MAX_LOGS` = 20 Dateien. `!pbc perf log` liest aus dem Speicher.
+- **Player-Log:** wird einmal geladen, nicht mehr bei jedem Ereignis gelesen, auf 5000 Zeilen begrenzt.
+
+### Aufgeräumt
+- Toter Code entfernt: `EscalateAllMods`, `IsInDrop`, unbenutzte Konstante `FLUSH_INTERVAL`, doppelte Startup-Prüfung, ungenutzte `using`s.
+- Mod-Listen (Debug, Performance) nicht mehr mehrfach von Hand gepflegt, sondern aus `ModRegistry`.
+- Kommentare korrigiert (Session-Modulliste, GlobalConfig-Beschreibung, `!pbc perf log`).
+- Init-Log nennt die tatsächlich registrierten Module.
+- Doku neu geschrieben (`DEV_Funktion`, `DEV_Anbindung`, `DEV_Dependencies`, `DEV_TODO`), `README.md`, `.gitignore`, `.gitattributes` ergänzt, veraltete `Phantombite IDs.txt` entfernt.
+
+### Bisher nirgends dokumentierte Erweiterungen (im Code bereits vorhanden)
+- `Core_Performance`: SimSpeed-Überwachung, HEAVY-Zuordnung, Eskalation, History-Datei
+- `Core_PlayerTracker`: Join/Leave-Protokoll, `!pbc players`
+- Adaptives Schreiben der Log-Datei
+- REGISTER mit Versionsfeld, automatischer Reset bei Mod-Update
+- `Core_PlanetSpawner` und `Core_StationRefill` sind aus dem Core ausgezogen (eigene Mods)
 
 ## 2026-03-27 — v2.0.0 — Core System komplett neu gebaut
 

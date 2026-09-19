@@ -1,0 +1,13 @@
+# Synology-Drive Konflikt- und Arbeitsdateien
+*_Conflict*
+.SynologyWorkingDirectory/
+@eaDir/
+
+# Windows
+desktop.ini
+Thumbs.db
+
+# Logs und Sicherungen
+*.log
+*.bak
+*.tmp

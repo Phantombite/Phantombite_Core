@@ -34,7 +34,9 @@ namespace PhantombiteCore.Core
 
         public void InitAll()
         {
-            PBLog.Log(MOD, MDL, "Init — " + _modules.Count + " Module: Logger, FileManager, Command, Performance, PlayerTracker");
+            var names = new List<string>();
+            foreach (var module in _modules) names.Add(module.ModuleName);
+            PBLog.Log(MOD, MDL, "Init — " + _modules.Count + " Module: " + string.Join(", ", names.ToArray()));
 
             foreach (var module in _modules)
             {

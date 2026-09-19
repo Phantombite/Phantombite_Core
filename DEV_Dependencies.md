@@ -1,42 +1,53 @@
-# DEV Dependencies — PhantomBite Core
+# DEV Dependencies — Phantombite Core
+
+Stand: 2026-09-19. Quelle der Wahrheit ist `Data/Scripts/PhantombiteCore/Core/ModRegistry.cs`.
+Diese Tabelle nur bei Änderungen dort mitpflegen.
 
 ## Dieser Mod benötigt
-Keine — PhantomBite Core hat keine Abhängigkeiten.
 
-## Mods die diesen Mod benötigen
+Nichts. Core hat keine Abhängigkeiten.
 
-| Mod | Workshop ID | Lokaler Name |
-|-----|-------------|--------------|
-| PhantomBite Artefact | 3689668016 | Phantombite_Artefact |
-| PhantomBite CableWinch | 3689668160 | Phantombite_CableWinch |
-| PhantomBite Creatures | 3691346493 | Phantombite_Creatures |
-| PhantomBite Economy | 3689686739 | Phantombite_Economy |
-| PhantomBite Encounter | 3689684015 | Phantombite_Encounter |
-| PhantomBite ServerAddon | 3689667750 | Phantombite_Server_Addon |
-| PhantomBite Sulvax | 3691347867 | Phantombite_Sulvax |
-| PhantomBite Sulvax RespawnRover | 3692354958 | Phantombite_Sulvax_RespawnRover |
+- Workshop-ID von Core: **3710485076** (`modinfo.sbmi`, `ModRegistry.Core`)
 
-## Externe Abhängigkeiten (optionale Mods)
+## Mods, die Core nutzen
 
-| Mod | Workshop ID | Zweck |
-|-----|-------------|-------|
-| MES (Modular Encounters Systems) | 1521905890 | Benötigt von Creatures + Encounter |
+| Mod | Workshop-ID | Lokaler Name (Ordner) | Kanal |
+|---|---|---|---|
+| AdminProjektor | 3706769805 | Phantombite_AdminProjektor | 1995011 |
+| Artefact | 3689668016 | Phantombite_Artefact | 1995001 |
+| AutoTransfer | 3693780953 | Phantombite_AutoTransfer | 1995009 |
+| Cable Winch | 3689668160 | Phantombite_Cable_Winch | 1995002 |
+| Creatures | 3728225683 | Phantombite_Creatures | 1995003 |
+| Economy | 3728099479 | Phantombite_Economy | 1995004 |
+| Encounter | 3689684015 | Phantombite_Encounter | 1995005 |
+| Mining | 3719998525 | Phantombite_Mining | 1995013 |
+| Pandora | 3723475424 | Phantombite_Pandora | 1995014 |
+| PlanetSpawner | 3723481681 | Phantombite_PlanetSpawner | 1995010 |
+| Server Addon | 3689667750 | Phantombite_Server_Addon | 1995006 |
+| StationRefill | 3723483728 | Phantombite_StationRefill | 1995016 |
+| Sulvax | 3691347867 | Phantombite_Sulvax | 1995007 |
+| Sulvax RespawnRover | 3692354958 | Phantombite_Sulvax_RespawnRover | 1995008 |
+| WaterElectrolyzer | 3708390650 | Phantombite_WaterElectrolyzer | 1995012 |
 
-## Messaging Kanäle
+Der Mod muss nicht alle Kanäle nutzen: Core schickt `READY` nur an Mods, die aktiv sind.
+Ob jeder dieser Mods tatsächlich am Core hängt, steht in `DEV_TODO.md`.
 
-| Kanal | Verwendung |
-|-------|-----------|
-| 1995000 | Core → Alle Mods (READY, CMD, LOGLEVEL) |
-| 1995001 | Core → Artefact |
-| 1995002 | Core → CableWinch |
-| 1995003 | Core → Creatures |
-| 1995004 | Core → Economy |
-| 1995005 | Core → Encounter |
-| 1995006 | Core → ServerAddon |
-| 1995007 | Core → Sulvax |
-| 1995008 | Core → SulvaxRespawnRover |
-| 1995999 | Alle Mods → Core (Log-Nachrichten + CMDRESULT) |
+## Externe Abhängigkeiten (optional)
+
+| Mod | Workshop-ID | Zweck |
+|---|---|---|
+| Modular Encounters Systems (MES) | 1521905890 | Benötigt von Encounter (`RequiresMES`). Core warnt im Log, wenn Encounter aktiv ist und MES fehlt |
+
+## Feste Kanäle und Pakete
+
+| Wert | Verwendung |
+|---|---|
+| 1995000 | Mod → Core: `REGISTER`, `HEAVY_START/END`, `PERFACK` |
+| 1995999 | Mod → Core: `LOG`, `CMDRESULT` |
+| Paket 5997 | Client → Server: Command-Weitergabe |
+| Paket 5998 | Server → Client: Command-Ergebnis für die HUD-Anzeige |
 
 ## Links
-- **Steam Workshop:** https://steamcommunity.com/sharedfiles/filedetails/?id=3689625814
-- **GitHub:** https://github.com/Phantombite/PhantomBiteCore
+
+- Steam Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3710485076
+- GitHub: https://github.com/Phantombite/Phantombite_Core

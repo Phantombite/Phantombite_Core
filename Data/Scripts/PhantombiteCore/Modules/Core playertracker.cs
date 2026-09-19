@@ -31,6 +31,9 @@ namespace PhantombiteCore.Core
         private const string MOD             = "Phantombite_Core";
         private const string MDL             = "Core_PlayerTracker";
         private const string PLAYER_LOG_FILE = "Phantombite_PlayerLog.txt";
+        private const int    PLAYER_LOG_MAX_LINES  = 5000;
+        private const int    PLAYER_LOG_KEEP_LINES = 4000;
+        private readonly List<string> _playerLogLines = new List<string>();
 
         // ── Referenzen ────────────────────────────────────────────────────────
         private PerformanceModule _performanceModule;
@@ -152,22 +155,29 @@ namespace PhantombiteCore.Core
 
         // ── Player Log Datei ──────────────────────────────────────────────────
 
+        /// <summary>Lädt das Player-Log einmal in den Speicher (danach wird nur noch geschrieben, nie gelesen).</summary>
         private void EnsurePlayerLogExists()
         {
-            if (!FileManagerModule.FileExists(PLAYER_LOG_FILE, typeof(FileManagerModule)))
+            string existing = FileManagerModule.ReadFile(PLAYER_LOG_FILE, typeof(FileManagerModule));
+            if (!string.IsNullOrEmpty(existing))
+                _playerLogLines.AddRange(existing.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries));
+            else
                 FileManagerModule.WriteFile(PLAYER_LOG_FILE, "", typeof(FileManagerModule));
 
-            PBLog.Log(MOD, MDL, "Player-Log bereit: " + PLAYER_LOG_FILE);
+            PBLog.Log(MOD, MDL, "Player-Log bereit: " + PLAYER_LOG_FILE + " (" + _playerLogLines.Count + " Zeilen)");
         }
 
         private void AppendToPlayerLog(string line)
         {
             try
             {
-                string existing = FileManagerModule.ReadFile(PLAYER_LOG_FILE,
-                    typeof(FileManagerModule)) ?? "";
+                _playerLogLines.Add(line);
+                // Datei begrenzen: über MAX Zeilen die ältesten verwerfen
+                if (_playerLogLines.Count > PLAYER_LOG_MAX_LINES)
+                    _playerLogLines.RemoveRange(0, _playerLogLines.Count - PLAYER_LOG_KEEP_LINES);
+
                 FileManagerModule.WriteFile(PLAYER_LOG_FILE,
-                    existing + line + "\n", typeof(FileManagerModule));
+                    string.Join("\n", _playerLogLines.ToArray()) + "\n", typeof(FileManagerModule));
             }
             catch (Exception ex)
             {
