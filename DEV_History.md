@@ -22,6 +22,8 @@ Durchgang durch den gesamten Core-Code. Kompiliert fehlerfrei gegen die SE-DLLs 
 - `!pbc debug`: fehlte der Schlüssel in einer älteren GlobalConfig, wurde die Einstellung nicht gespeichert. Jetzt wird sie unter `[Debug]` ergänzt.
 - Performance-History: ein einziger fehlerhafter Zahlenwert brach das komplette Laden ab. Jetzt tolerant.
 - Pandora bekam kein `READY`, obwohl ID und Kanal im Registry standen.
+- **Admin-Flag bei REGISTER toleranter:** Ein Command mit `true` statt `1` (so bei Creatures) galt bisher als
+  für alle Spieler erlaubt. Core wertet jetzt `1` und `true` als „nur Admin“.
 - **AutoTransfer bekam nie ein Debug-Level:** Der Mod meldet sich mit dem Kurznamen `autotrans`, der Core kannte
   ihn als `AutoTransfer`. `ResolveLocalName` kennt jetzt den Alias, und die Performance-Liste in der GlobalConfig
   führt `AutoTrans` (neue Configs; in einer bestehenden Config heißt der Abschnitt weiter `[Performance.AutoTransfer]`

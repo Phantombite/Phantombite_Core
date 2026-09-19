@@ -205,7 +205,10 @@ namespace PhantombiteCore.Modules
                     if (cmdParts.Length < 3) continue;
 
                     string cmdName   = cmdParts[0];
-                    bool   adminOnly = cmdParts[1] == "1";
+                    // "1" oder "true" = nur Admin; alles andere = für alle. Ein Tippfehler im Mod
+                    // (z. B. "true") macht Admin-Commands so nicht versehentlich öffentlich.
+                    bool   adminOnly = cmdParts[1] == "1" ||
+                                       cmdParts[1].Equals("true", StringComparison.OrdinalIgnoreCase);
                     string cmdDesc   = cmdParts[2];
                     long   ch        = channel;
 
