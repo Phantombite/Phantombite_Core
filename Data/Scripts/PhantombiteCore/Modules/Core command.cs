@@ -253,7 +253,9 @@ namespace PhantombiteCore.Modules
                 string[] parts = msg.Split(new[] { '|' }, 5);
                 if (parts.Length < 5) return;
 
-                string modName  = parts[1];
+                // Mod-Name auf den lokalen Namen normalisieren, sonst findet PBLog das Debug-Level nicht
+                // (z.B. "Phantombite_CableWinch" → "Phantombite_Cable_Winch")
+                string modName  = ModRegistry.ResolveLocalName(parts[1]) ?? parts[1];
                 string levelStr = parts[2];
                 string module   = parts[3];
                 string message  = parts[4];
