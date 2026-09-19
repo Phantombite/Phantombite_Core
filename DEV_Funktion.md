@@ -17,6 +17,12 @@ mehrere Mods brauchen:
 
 Core hat keine Abhängigkeiten. Alle anderen Phantombite-Mods hängen (optional) an Core.
 
+**Idee hinter dem Core:** Er entstand, als der `AdminChip` aus Phantombite Economy herausgelöst wurde
+(Version 1.0.0). Daraus wurde die Grundidee: Core verwaltet und steuert alle Phantombite-Mods und hat die
+Kontrolle über Commands, Logging, Konfiguration und Performance. Neue Mods binden sich deshalb über `READY` und
+`REGISTER` an den Core an, statt eigene Command- oder Log-Systeme zu bauen (siehe `DEV_Anbindung.md`).
+Mods, die den `AdminChip` als Bauteil benötigen, brauchen Core: AdminProjektor, Artefact sowie Blöcke in Economy und AutoTransfer.
+
 ## Dateien
 
 ```
