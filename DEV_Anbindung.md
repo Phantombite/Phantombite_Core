@@ -15,8 +15,8 @@ Core antwortet mit "LOGLEVEL|0..2" (und ggf. "PERFLEVEL|n")
 Ab jetzt kommen Commands als "CMD|..." auf dem Mod-Kanal
 ```
 
-Grund: SE startet Mods in unbekannter Reihenfolge. Der Mod muss deshalb schon in `BeforeStart`
-(Init) auf seinem Kanal lauschen und darf erst nach READY registrieren.
+Grund: SE startet Mods in unbekannter Reihenfolge, und der Core sendet `READY` in seinem `BeforeStart`. Der Mod muss deshalb schon in `LoadData`
+seinen Kanal-Handler anlegen (nicht erst in `BeforeStart`) und darf erst nach READY registrieren.
 
 ## Nachrichten
 
@@ -60,7 +60,7 @@ sie als **erstes Argument** (`args[0]`), sonst fehlt sie und der Mod nimmt seine
 ### 1. Im Core (`ModRegistry.cs`)
 
 - [ ] Workshop-ID (`public const ulong MeinMod`) und lokalen Namen (`LocalMeinMod`, muss genau dem Ordnernamen entsprechen)
-- [ ] Kanal (`ChannelMeinMod`, nächste freie Nummer ab 1995017; 1995015 ist ungenutzt)
+- [ ] Kanal (`ChannelMeinMod`, nächste freie Nummer ab 1995017; 1995015 gehört dem Encounter System)
 - [ ] In `AllPbIds`, in `AllLocalNames`, in `GetLocalName()` und `GetName()`
 - [ ] Nutzt der Mod `HEAVY_START`: Kurzname in `PerformanceMods`
 - [ ] In `Core command.cs` → `SendReadyToActiveMods()` das Paar ID/Kanal ergänzen
@@ -130,7 +130,7 @@ private void OnMessage(object data)
 
 | Problem | Ursache / Lösung |
 |---|---|
-| Mod bekommt kein READY | Handler wird zu spät registriert. Er muss in `BeforeStart` bereit sein, bevor Core `SendReadyToActiveMods()` aufruft |
+| Mod bekommt kein READY | Handler wird zu spät angelegt. Er muss in `LoadData` bereit sein, bevor der Core in seinem `BeforeStart` `SendReadyToActiveMods()` aufruft |
 | Kein HUD-Feedback nach Command | `CMDRESULT` an falschen Kanal oder mit anderen Argumenten gesendet |
 | Mod erscheint nicht in `!pbc help` | Nur Admin-Commands (gewollt) oder Name in `REGISTER` nicht klein/ohne Unterstrich |
 | Debug-Level wirkt nicht | Lokaler Name in `ModRegistry` passt nicht zum Ordnernamen, oder Mod filtert nicht selbst |

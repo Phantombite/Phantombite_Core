@@ -427,6 +427,7 @@ namespace PhantombiteCore.Modules
                 { ModRegistry.Mining,             ModRegistry.ChannelMining             },
                 { ModRegistry.StationRefill,      ModRegistry.ChannelStationRefill      },
                 { ModRegistry.Pandora,            ModRegistry.ChannelPandora            },
+                { ModRegistry.EncounterSystem,    ModRegistry.ChannelEncounterSystem    },
             };
 
             int sent = 0;

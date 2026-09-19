@@ -11,6 +11,9 @@ namespace PhantombiteCore.Core
         public const ulong Creatures          = 3728225683UL;
         public const ulong Economy            = 3728099479UL;
         public const ulong Encounter          = 3689684015UL;
+        // Platzhalter, bis der Mod veröffentlicht ist (echte Workshop-ID dann hier eintragen).
+        // Erkannt wird er bis dahin über den lokalen Namen.
+        public const ulong EncounterSystem    = 9990000001UL;
         public const ulong Mining             = 3719998525UL;
         public const ulong Pandora            = 3723475424UL;
         public const ulong PlanetSpawner      = 3723481681UL;
@@ -32,6 +35,7 @@ namespace PhantombiteCore.Core
         public const string LocalCreatures          = "Phantombite_Creatures";
         public const string LocalEconomy            = "Phantombite_Economy";
         public const string LocalEncounter          = "Phantombite_Encounter";
+        public const string LocalEncounterSystem    = "Phantombite_Encounter_System";
         public const string LocalMining             = "Phantombite_Mining";
         public const string LocalPandora            = "Phantombite_Pandora";
         public const string LocalPlanetSpawner      = "Phantombite_PlanetSpawner";
@@ -57,6 +61,7 @@ namespace PhantombiteCore.Core
         public const long ChannelWaterElectrolyzer  = 1995012L;
         public const long ChannelMining             = 1995013L;
         public const long ChannelPandora            = 1995014L;
+        public const long ChannelEncounterSystem    = 1995015L;
         public const long ChannelStationRefill      = 1995016L;
         public const long ChannelLog                = 1995999L;
 
@@ -68,7 +73,7 @@ namespace PhantombiteCore.Core
         public static readonly ulong[] AllPbIds =
         {
             AdminProjektor, Artefact, AutoTransfer, CableWinch,
-            Creatures, Economy, Encounter, Mining, Pandora,
+            Creatures, Economy, Encounter, EncounterSystem, Mining, Pandora,
             PlanetSpawner, ServerAddon, StationRefill,
             Sulvax, SulvaxRespawnRover, WaterElectrolyzer
         };
@@ -77,7 +82,7 @@ namespace PhantombiteCore.Core
         public static readonly string[] AllLocalNames =
         {
             LocalCore, LocalAdminProjektor, LocalArtefact, LocalAutoTransfer,
-            LocalCableWinch, LocalCreatures, LocalEconomy, LocalEncounter,
+            LocalCableWinch, LocalCreatures, LocalEconomy, LocalEncounter, LocalEncounterSystem,
             LocalMining, LocalPandora, LocalPlanetSpawner, LocalServerAddon,
             LocalStationRefill, LocalSulvax, LocalSulvaxRespawnRover, LocalWaterElectrolyzer
         };
@@ -87,7 +92,7 @@ namespace PhantombiteCore.Core
         public static readonly string[] PerformanceMods =
         {
             "Mining", "Economy", "AutoTrans", "CableWinch", "Creatures",
-            "Encounter", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
+            "Encounter", "EncounterSystem", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
             "AdminProjektor", "StationRefill", "Pandora"
         };
 
@@ -125,6 +130,7 @@ namespace PhantombiteCore.Core
             if (modId == Creatures)          return LocalCreatures;
             if (modId == Economy)            return LocalEconomy;
             if (modId == Encounter)          return LocalEncounter;
+            if (modId == EncounterSystem)    return LocalEncounterSystem;
             if (modId == Mining)             return LocalMining;
             if (modId == Pandora)            return LocalPandora;
             if (modId == PlanetSpawner)      return LocalPlanetSpawner;
@@ -146,6 +152,7 @@ namespace PhantombiteCore.Core
             if (modId == Creatures)          return "Creatures";
             if (modId == Economy)            return "Economy";
             if (modId == Encounter)          return "Encounter";
+            if (modId == EncounterSystem)    return "EncounterSystem";
             if (modId == Mining)             return "Mining";
             if (modId == Pandora)            return "Pandora";
             if (modId == PlanetSpawner)      return "PlanetSpawner";

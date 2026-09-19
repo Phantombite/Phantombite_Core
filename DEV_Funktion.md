@@ -119,7 +119,7 @@ Details und Beispiele: `DEV_Anbindung.md`.
 | Mod → Core | 1995999 | `LOG\|Phantombite_X\|0..2\|Modul\|Text` · `CMDRESULT\|mod\|cmd\|args\|steamId\|ok\|Text` |
 
 Kanäle: siehe `ModRegistry.Channel*` (1995000 Core, 1995001–1995014 je Mod, 1995999 Log/Ergebnis).
-Kanal 1995015 ist unbenutzt und 1995016 gehört StationRefill.
+Kanal 1995015 gehört dem Encounter System, 1995016 StationRefill.
 
 ## Performance-System
 

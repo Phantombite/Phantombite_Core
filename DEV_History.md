@@ -24,6 +24,8 @@ Durchgang durch den gesamten Core-Code. Kompiliert fehlerfrei gegen die SE-DLLs 
 - Pandora bekam kein `READY`, obwohl ID und Kanal im Registry standen.
 - **Admin-Flag bei REGISTER toleranter:** Ein Command mit `true` statt `1` (so bei Creatures) galt bisher als
   für alle Spieler erlaubt. Core wertet jetzt `1` und `true` als „nur Admin“.
+- **Encounter System eingetragen:** lokaler Name `Phantombite_Encounter_System`, Kanal 1995015, Kurzname `encountersystem`, Platzhalter-ID `9990000001`
+  (bis zur Veröffentlichung, Erkennung über den lokalen Namen). Bekommt jetzt `READY`.
 - **AutoTransfer bekam nie ein Debug-Level:** Der Mod meldet sich mit dem Kurznamen `autotrans`, der Core kannte
   ihn als `AutoTransfer`. `ResolveLocalName` kennt jetzt den Alias, und die Performance-Liste in der GlobalConfig
   führt `AutoTrans` (neue Configs; in einer bestehenden Config heißt der Abschnitt weiter `[Performance.AutoTransfer]`

@@ -20,6 +20,7 @@ Nichts. Core hat keine Abhängigkeiten.
 | Creatures | 3728225683 | Phantombite_Creatures | 1995003 |
 | Economy | 3728099479 | Phantombite_Economy | 1995004 |
 | Encounter | 3689684015 | Phantombite_Encounter | 1995005 |
+| Encounter System (in Entwicklung) | Platzhalter 9990000001 | Phantombite_Encounter_System | 1995015 |
 | Mining | 3719998525 | Phantombite_Mining | 1995013 |
 | Pandora | 3723475424 | Phantombite_Pandora | 1995014 |
 | PlanetSpawner | 3723481681 | Phantombite_PlanetSpawner | 1995010 |
