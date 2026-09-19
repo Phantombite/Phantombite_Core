@@ -22,6 +22,10 @@ Durchgang durch den gesamten Core-Code. Kompiliert fehlerfrei gegen die SE-DLLs 
 - `!pbc debug`: fehlte der Schlüssel in einer älteren GlobalConfig, wurde die Einstellung nicht gespeichert. Jetzt wird sie unter `[Debug]` ergänzt.
 - Performance-History: ein einziger fehlerhafter Zahlenwert brach das komplette Laden ab. Jetzt tolerant.
 - Pandora bekam kein `READY`, obwohl ID und Kanal im Registry standen.
+- **AutoTransfer bekam nie ein Debug-Level:** Der Mod meldet sich mit dem Kurznamen `autotrans`, der Core kannte
+  ihn als `AutoTransfer`. `ResolveLocalName` kennt jetzt den Alias, und die Performance-Liste in der GlobalConfig
+  führt `AutoTrans` (neue Configs; in einer bestehenden Config heißt der Abschnitt weiter `[Performance.AutoTransfer]`
+  und muss bei Bedarf zu `[Performance.AutoTrans]` umbenannt werden).
 - **Log-Nachrichten mit abweichendem Mod-Namen wurden verworfen:** Meldete ein Mod sich im `LOG|`-Paket mit
   einem anderen Namen als dem lokalen (Cable_Winch sendete `Phantombite_CableWinch` statt `Phantombite_Cable_Winch`),
   fand `PBLog` sein Debug-Level nicht und unterdrückte Level-1/2-Meldungen. Core normalisiert den Namen jetzt

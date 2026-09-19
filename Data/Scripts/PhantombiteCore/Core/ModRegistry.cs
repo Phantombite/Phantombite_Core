@@ -86,7 +86,7 @@ namespace PhantombiteCore.Core
         // Kurznamen, so wie sie sich per REGISTER melden (Gross-/Kleinschreibung egal).
         public static readonly string[] PerformanceMods =
         {
-            "Mining", "Economy", "AutoTransfer", "CableWinch", "Creatures",
+            "Mining", "Economy", "AutoTrans", "CableWinch", "Creatures",
             "Encounter", "Artefact", "PlanetSpawner", "WaterElectrolyzer",
             "AdminProjektor", "StationRefill", "Pandora"
         };
@@ -102,6 +102,7 @@ namespace PhantombiteCore.Core
         {
             if (string.IsNullOrEmpty(shortName)) return null;
             string wanted = NormalizeName(shortName);
+            if (wanted == "autotrans") wanted = "autotransfer"; // AutoTransfer meldet sich mit dem Kurznamen "autotrans"
             foreach (var local in AllLocalNames)
                 if (NormalizeName(local) == wanted) return local;
             return null;
